@@ -1,0 +1,2 @@
+[functions.vyra-controller]
+verify_jwt = false
