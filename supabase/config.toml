@@ -1,3 +1,4 @@
 # VYRA Edge Function configuration
+# GitHub deployment trigger
 [functions.vyra-controller]
 verify_jwt = false
