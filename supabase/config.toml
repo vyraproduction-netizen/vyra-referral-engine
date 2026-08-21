@@ -1,2 +1,3 @@
+# VYRA Edge Function configuration
 [functions.vyra-controller]
 verify_jwt = false
