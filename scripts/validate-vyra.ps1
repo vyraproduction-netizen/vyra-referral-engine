@@ -94,7 +94,9 @@ try {
     }
 
     $requiredFiles = @(
-	    ".github/workflows/vyra-validation.yml",
+        ".github/workflows/vyra-validation.yml",
+        "scripts/runtime/watch-job.ps1",
+        "scripts/sql/queue-diagnostics.sql",
         "deno.lock",
         "supabase/config.toml",
         "supabase/functions/_shared/vyra/job-store.ts",
@@ -186,6 +188,141 @@ try {
             "FAIL" `
             "CI workflow" `
             "Workflow file not found"
+    }
+
+    $watchJobPath = Join-Path `
+        $ProjectRoot `
+        "scripts/runtime/watch-job.ps1"
+
+    if (
+        Test-Path `
+        -LiteralPath $watchJobPath `
+        -PathType Leaf
+    ) {
+        $watchTokens = $null
+        $watchParseErrors = $null
+
+        [System.Management.Automation.Language.Parser]::ParseFile(
+            $watchJobPath,
+            [ref]$watchTokens,
+            [ref]$watchParseErrors
+        ) | Out-Null
+
+        $watchText = Get-Content `
+            -LiteralPath $watchJobPath `
+            -Raw
+
+        $requiredWatchMarkers = @(
+            '127.0.0.1',
+            '[switch]$AllowRemote',
+            '-Method Get',
+            'Remote Supabase access is blocked'
+        )
+
+        $missingWatchMarkers = @(
+            $requiredWatchMarkers |
+            Where-Object {
+                -not $watchText.Contains($_)
+            }
+        )
+
+        $unsafeWatchMethod = (
+            $watchText -match
+            '(?i)-Method\s+(Post|Put|Patch|Delete)'
+        )
+
+        if ($watchParseErrors.Count -gt 0) {
+            Add-Result `
+                "FAIL" `
+                "Job watcher" `
+                "PowerShell syntax error"
+        }
+        elseif ($missingWatchMarkers.Count -gt 0) {
+            Add-Result `
+                "FAIL" `
+                "Job watcher" `
+                ("Missing safety marker(s): {0}" -f (
+                    $missingWatchMarkers -join ", "
+                ))
+        }
+        elseif ($unsafeWatchMethod) {
+            Add-Result `
+                "FAIL" `
+                "Job watcher" `
+                "Mutating HTTP method detected"
+        }
+        else {
+            Add-Result `
+                "PASS" `
+                "Job watcher" `
+                "Local-first read-only watcher detected"
+        }
+    }
+    else {
+        Add-Result `
+            "FAIL" `
+            "Job watcher" `
+            "watch-job.ps1 not found"
+    }
+
+    $queueSqlPath = Join-Path `
+        $ProjectRoot `
+        "scripts/sql/queue-diagnostics.sql"
+
+    if (
+        Test-Path `
+        -LiteralPath $queueSqlPath `
+        -PathType Leaf
+    ) {
+        $queueSqlText = Get-Content `
+            -LiteralPath $queueSqlPath `
+            -Raw
+
+        $hasReadOnlyTransaction = (
+            $queueSqlText -match
+            '(?im)^\s*begin\s+transaction\s+read\s+only\s*;'
+        )
+
+        $hasRollback = (
+            $queueSqlText -match
+            '(?im)^\s*rollback\s*;'
+        )
+
+        $hasMutatingSql = (
+            $queueSqlText -match
+            '(?im)^\s*(insert|update|delete|truncate|drop|alter|create|grant|revoke|call)\b'
+        )
+
+        if (-not $hasReadOnlyTransaction) {
+            Add-Result `
+                "FAIL" `
+                "Queue SQL" `
+                "READ ONLY transaction missing"
+        }
+        elseif (-not $hasRollback) {
+            Add-Result `
+                "FAIL" `
+                "Queue SQL" `
+                "ROLLBACK missing"
+        }
+        elseif ($hasMutatingSql) {
+            Add-Result `
+                "FAIL" `
+                "Queue SQL" `
+                "Mutating SQL statement detected"
+        }
+        else {
+            Add-Result `
+                "PASS" `
+                "Queue SQL" `
+                "Read-only diagnostic SQL detected"
+        }
+    }
+    else {
+        Add-Result `
+            "FAIL" `
+            "Queue SQL" `
+            "queue-diagnostics.sql not found"
     }
 
     $configPath = Join-Path $ProjectRoot "supabase/config.toml"
