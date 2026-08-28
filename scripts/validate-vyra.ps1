@@ -215,6 +215,67 @@ try {
         }
     }
 
+    $trackedUnitTests = @(
+        $trackedTypeScript |
+        Where-Object {
+            $_ -match '(?i)-test\.ts$'
+        }
+    )
+
+    if ($trackedUnitTests.Count -eq 0) {
+        Add-Result "WARNING" "Unit tests" "No tracked *-test.ts files found"
+    }
+    else {
+        $testNpx = Get-Command npx.cmd -ErrorAction SilentlyContinue
+        $testLockPath = Join-Path $ProjectRoot "deno.lock"
+
+        if (-not $testNpx) {
+            Add-Result "FAIL" "Unit tests" "npx.cmd not found"
+        }
+        elseif (
+            -not (
+                Test-Path `
+                -LiteralPath $testLockPath `
+                -PathType Leaf
+            )
+        ) {
+            Add-Result "FAIL" "Unit tests" "deno.lock not found"
+        }
+        else {
+            $absoluteUnitTests = @(
+                $trackedUnitTests |
+                ForEach-Object {
+                    Join-Path $ProjectRoot $_
+                }
+            )
+
+            Write-Host "Running Deno unit tests..." -ForegroundColor DarkCyan
+
+            $testArguments = @(
+                "--yes",
+                "deno",
+                "test",
+                "--lock=$testLockPath",
+                "--frozen-lockfile"
+            ) + $absoluteUnitTests
+
+            & $testNpx.Source @testArguments
+
+            if ($LASTEXITCODE -eq 0) {
+                Add-Result `
+                    "PASS" `
+                    "Unit tests" `
+                    ("{0} test file(s) passed" -f $trackedUnitTests.Count)
+            }
+            else {
+                Add-Result `
+                    "FAIL" `
+                    "Unit tests" `
+                    ("Exit code {0}" -f $LASTEXITCODE)
+            }
+        }
+    }
+
     $trackedTextFiles = @()
     if ($git) {
         $trackedTextFiles = @(
