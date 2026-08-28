@@ -1,3 +1,5 @@
+import type { VyraJob } from "../_shared/vyra/job-store.ts";
+
 import {
   researchWithTavily,
 } from "./tavily-research.ts";
@@ -25,10 +27,7 @@ export type ResearchFinding = {
   };
 };
 
-type ResearchJob = {
-  id: string;
-  agent: string;
-  task_type: string;
+export type ResearchJob = VyraJob & {
   payload: {
     request_id: string;
     language: string;
@@ -47,6 +46,88 @@ type ResearchJob = {
     recommended_action: string;
   };
 };
+
+export function assertResearchJob(
+  job: VyraJob,
+): asserts job is ResearchJob {
+  const payload = job.payload;
+
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    throw new Error("Research job payload is required");
+  }
+
+  const candidate = payload.candidate;
+
+  if (
+    !candidate ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate)
+  ) {
+    throw new Error("Research job candidate is required");
+  }
+
+  const candidateRecord =
+    candidate as Record<string, unknown>;
+
+  const payloadStringFields = [
+    "request_id",
+    "language",
+    "region",
+    "topic_seed",
+    "recommended_action",
+  ] as const;
+
+  for (const field of payloadStringFields) {
+    if (
+      typeof payload[field] !== "string" ||
+      payload[field].length === 0
+    ) {
+      throw new Error(
+        `Research job payload.${field} is required`,
+      );
+    }
+  }
+
+  const candidateStringFields = [
+    "title",
+    "url",
+    "evidence_source",
+  ] as const;
+
+  for (const field of candidateStringFields) {
+    if (
+      typeof candidateRecord[field] !== "string" ||
+      candidateRecord[field].length === 0
+    ) {
+      throw new Error(
+        `Research job candidate.${field} is required`,
+      );
+    }
+  }
+
+  const candidateNumberFields = [
+    "opportunity_score",
+    "commercial_intent",
+    "content_potential",
+    "referral_potential",
+    "relevance",
+  ] as const;
+
+  for (const field of candidateNumberFields) {
+    if (
+      typeof candidateRecord[field] !== "number" ||
+      !Number.isFinite(candidateRecord[field])
+    ) {
+      throw new Error(
+        `Research job candidate.${field} must be a number`,
+      );
+    }
+  }
+}
 
 export async function runResearch(
   job: ResearchJob,

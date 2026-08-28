@@ -11,11 +11,6 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/research-worker/index.ts"
 
-[functions.research-worker-test]
-enabled = true
-verify_jwt = false
-entrypoint = "./functions/research-worker-test/index.ts"
-
 [functions.vyra-controller]
 enabled = true
 verify_jwt = false

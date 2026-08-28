@@ -1,5 +1,51 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { withSupabase } from "npm:@supabase/server@^1";
+import { withSupabase } from "npm:@supabase/server@1.4.1";
+
+type ControllerJob = {
+  id: string;
+  payload: Record<string, unknown> | null;
+};
+
+type ControllerDatabase = {
+  public: {
+    Tables: {
+      [_ in never]: never;
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      claim_next_job: {
+        Args: {
+          p_agent: string;
+        };
+        Returns: ControllerJob[];
+      };
+      complete_job: {
+        Args: {
+          p_job_id: string;
+          p_status: string;
+          p_result: object;
+          p_error_message: string | null;
+        };
+        Returns: unknown;
+      };
+      retry_job: {
+        Args: {
+          p_job_id: string;
+          p_error_message: string;
+        };
+        Returns: unknown;
+      };
+    };
+    Enums: {
+      [_ in never]: never;
+    };
+    CompositeTypes: {
+      [_ in never]: never;
+    };
+  };
+};
 
 const allowedAgents = new Set([
   "topic_scout",
@@ -15,7 +61,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 export default {
-  fetch: withSupabase(
+  fetch: withSupabase<ControllerDatabase>(
     { auth: "secret:vyra_controller" },
     async (req, ctx) => {
       try {

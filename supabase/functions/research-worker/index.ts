@@ -5,6 +5,7 @@ import {
 } from "./db.ts";
 
 import {
+  assertResearchJob,
   runResearch,
 } from "./research.ts";
 
@@ -21,6 +22,8 @@ Deno.serve(async () => {
         message: "No research job available",
       });
     }
+
+    assertResearchJob(job);
 
     const researchResult = await runResearch(job);
 
