@@ -1,0 +1,21 @@
+const names = [
+  "RESEARCH_PROVIDER",
+  "TAVILY_API_KEY",
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_SECRET_KEY",
+];
+
+Deno.serve(async () => {
+  const environment: Record<string, string> = {};
+
+  for (const name of names) {
+    environment[name] =
+      Deno.env.get(name) ? "SET" : "MISSING";
+  }
+
+  return Response.json({
+    ok: true,
+    environment,
+  });
+});

@@ -1,4 +1,27 @@
-# VYRA Edge Function configuration
-# GitHub deployment trigger
-[functions.vyra-controller]
+project_id = "vyra-local"
+
+[functions.topic-scout]
+enabled = true
 verify_jwt = false
+import_map = "./functions/topic-scout/deno.json"
+entrypoint = "./functions/topic-scout/index.ts"
+
+[functions.research-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/research-worker/index.ts"
+
+[functions.research-worker-test]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/research-worker-test/index.ts"
+
+[functions.vyra-controller]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/vyra-controller/index.ts"
+
+[functions.vyra-diagnostics]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/vyra-diagnostics/index.ts"

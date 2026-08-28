@@ -1,0 +1,7 @@
+.env
+.env.*
+*.backup
+*.working
+*.pre-*
+*.pre-*
+cloudflare-vyra-job-controller.backup.*
