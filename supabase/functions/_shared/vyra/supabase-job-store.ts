@@ -1,5 +1,10 @@
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
-import type { JobStore, VyraJob } from "./job-store.ts";
+import type {
+  CreatedVyraJob,
+  JobStore,
+  VyraJob,
+  VyraJobInput,
+} from "./job-store.ts";
 
 export class SupabaseJobStore implements JobStore {
   constructor(private readonly client: SupabaseClient) {}
@@ -44,6 +49,49 @@ export class SupabaseJobStore implements JobStore {
     if (error) {
       throw new Error(`Job retry failed: ${error.message}`);
     }
+  }
+
+  async createMany(
+    jobs: VyraJobInput[],
+  ): Promise<CreatedVyraJob[]> {
+    if (jobs.length === 0) {
+      return [];
+    }
+
+    const { data, error } = await this.client
+      .from("jobs")
+      .insert(jobs)
+      .select("id, payload");
+
+    if (error) {
+      throw new Error(`Job insert failed: ${error.message}`);
+    }
+
+    return (data ?? []).map((row) => ({
+      id: row.id,
+      dedupeKey:
+        row.payload?._meta?.dedupe_key ?? "",
+    }));
+  }
+
+  async existsByDedupeKey(
+    dedupeKey: string,
+  ): Promise<boolean> {
+    const { data, error } = await this.client
+      .from("jobs")
+      .select("id")
+      .contains("payload", {
+        _meta: {
+          dedupe_key: dedupeKey,
+        },
+      })
+      .limit(1);
+
+    if (error) {
+      throw new Error(`Job dedupe check failed: ${error.message}`);
+    }
+
+    return (data?.length ?? 0) > 0;
   }
 }
 

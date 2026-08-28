@@ -1,4 +1,7 @@
-import { createClient } from "jsr:@supabase/supabase-js@2";
+import type {
+  VyraJobInput,
+} from "../_shared/vyra/job-store.ts";
+import { createSupabaseJobStore } from "../_shared/vyra/supabase-job-store.ts";
 
 import type {
   JobInsertRow,
@@ -16,47 +19,21 @@ export async function insertResearchJobs(
     return [];
   }
 
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const store = createSupabaseJobStore();
 
-  const supabaseKey =
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
-    Deno.env.get("SUPABASE_SECRET_KEY");
+  const jobs: VyraJobInput[] = rows.map((row) => ({
+    agent: row.agent,
+    task_type: row.task_type,
+    status: row.status,
+    priority: row.priority,
+    max_attempts: row.max_attempts,
+    payload: row.payload,
+  }));
 
-  if (!supabaseUrl) {
-    throw new Error("SUPABASE_URL is required");
-  }
+  const createdJobs = await store.createMany(jobs);
 
-  if (!supabaseKey) {
-    throw new Error(
-      "SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY is required",
-    );
-  }
-
-  const supabase = createClient(
-    supabaseUrl,
-    supabaseKey,
-    {
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-      },
-    },
-  );
-
-  const { data, error } = await supabase
-    .from("jobs")
-    .insert(rows)
-    .select("id, payload");
-
-  if (error) {
-    throw new Error(
-      `Research job insert failed: ${error.message}`,
-    );
-  }
-
-  return (data ?? []).map((row) => ({
-    id: row.id,
-    dedupe_key:
-      row.payload?._meta?.dedupe_key ?? "",
+  return createdJobs.map((job) => ({
+    id: job.id,
+    dedupe_key: job.dedupeKey,
   }));
 }

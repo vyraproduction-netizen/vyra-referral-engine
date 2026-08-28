@@ -15,6 +15,20 @@ export interface VyraJob {
   payload?: Record<string, unknown> | null;
 }
 
+export interface VyraJobInput {
+  agent: string;
+  task_type: string;
+  status: "queued";
+  priority: number;
+  max_attempts: number;
+  payload: Record<string, unknown>;
+}
+
+export interface CreatedVyraJob {
+  id: string;
+  dedupeKey: string;
+}
+
 export interface JobStore {
   claim(agent: string): Promise<VyraJob | null>;
 
@@ -27,4 +41,12 @@ export interface JobStore {
     jobId: string,
     errorMessage: string,
   ): Promise<void>;
+
+  createMany(
+    jobs: VyraJobInput[],
+  ): Promise<CreatedVyraJob[]>;
+
+  existsByDedupeKey(
+    dedupeKey: string,
+  ): Promise<boolean>;
 }
