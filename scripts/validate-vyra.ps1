@@ -94,6 +94,7 @@ try {
     }
 
     $requiredFiles = @(
+	    ".github/workflows/vyra-validation.yml",
         "deno.lock",
         "supabase/config.toml",
         "supabase/functions/_shared/vyra/job-store.ts",
@@ -116,6 +117,75 @@ try {
     }
     else {
         Add-Result "FAIL" "Required files" ("Missing: {0}" -f ($missingRequired -join ", "))
+    }
+
+    $workflowPath = Join-Path `
+        $ProjectRoot `
+        ".github/workflows/vyra-validation.yml"
+
+    if (
+        Test-Path `
+        -LiteralPath $workflowPath `
+        -PathType Leaf
+    ) {
+        $workflowText = Get-Content `
+            -LiteralPath $workflowPath `
+            -Raw
+
+        $requiredWorkflowMarkers = @(
+            "actions/checkout@v4",
+            "actions/setup-node@v4",
+            "scripts\validate-vyra.ps1",
+            "contents: read"
+        )
+
+        $missingWorkflowMarkers = @(
+            $requiredWorkflowMarkers |
+            Where-Object {
+                -not $workflowText.Contains($_)
+            }
+        )
+
+        $forbiddenWorkflowPatterns = @(
+            'supabase\s+functions\s+deploy',
+            'supabase\s+db\s+push',
+            'wrangler\s+deploy',
+            'git\s+push'
+        )
+
+        $unsafeWorkflowPatterns = @(
+            $forbiddenWorkflowPatterns |
+            Where-Object {
+                $workflowText -match $_
+            }
+        )
+
+        if ($missingWorkflowMarkers.Count -gt 0) {
+            Add-Result `
+                "FAIL" `
+                "CI workflow" `
+                ("Missing marker(s): {0}" -f (
+                    $missingWorkflowMarkers -join ", "
+                ))
+        }
+        elseif ($unsafeWorkflowPatterns.Count -gt 0) {
+            Add-Result `
+                "FAIL" `
+                "CI workflow" `
+                "Deploy or push command detected"
+        }
+        else {
+            Add-Result `
+                "PASS" `
+                "CI workflow" `
+                "Read-only validation workflow detected"
+        }
+    }
+    else {
+        Add-Result `
+            "FAIL" `
+            "CI workflow" `
+            "Workflow file not found"
     }
 
     $configPath = Join-Path $ProjectRoot "supabase/config.toml"
