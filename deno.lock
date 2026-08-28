@@ -3,6 +3,7 @@
   "specifiers": {
     "jsr:@supabase/functions-js@*": "2.112.4",
     "jsr:@supabase/supabase-js@2": "2.112.4",
+    "jsr:@supabase/supabase-js@2.112.4": "2.112.4",
     "npm:@supabase/auth-js@2.112.4": "2.112.4",
     "npm:@supabase/functions-js@2.112.4": "2.112.4",
     "npm:@supabase/postgrest-js@2.112.4": "2.112.4",

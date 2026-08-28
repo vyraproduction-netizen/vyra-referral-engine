@@ -2,19 +2,35 @@ import {
   filterNewResearchJobs,
 } from "./job-dedupe.ts";
 
+import {
+  buildResearchJob,
+} from "./research-job.ts";
+
 const duplicateKey =
   "22222222-2222-2222-2222-222222222222:topic_research:https://www.krea.ai/apps/enhance";
 
+const researchJob = buildResearchJob(
+  {
+    title: "Krea AI Enhance",
+    url: "https://www.krea.ai/apps/enhance",
+    opportunity_score: 0.75,
+    commercial_intent: 0.8,
+    content_potential: 0.8,
+    referral_potential: 0.75,
+    relevance: 0.68,
+    evidence_source: "test",
+    topic_seed: "image enhancement",
+    recommended_action:
+      "investigate_referral_program" as const,
+  },
+  "22222222-2222-2222-2222-222222222222",
+  "ru",
+  "EU",
+);
+
 const jobs = [
   {
-    job: {
-      agent: "research",
-      task_type: "topic_research",
-      status: "queued",
-      priority: 75,
-      payload: {},
-      max_attempts: 3,
-    },
+    job: researchJob,
     dedupe_key: duplicateKey,
   },
 ];
