@@ -1,5 +1,5 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { withSupabase } from "jsr:@supabase/server";
+import { withSupabase } from "npm:@supabase/server@^1";
 
 const allowedAgents = new Set([
   "topic_scout",
@@ -16,7 +16,7 @@ function getErrorMessage(error: unknown): string {
 
 export default {
   fetch: withSupabase(
-    { auth: "secret" },
+    { auth: "secret:vyra_controller" },
     async (req, ctx) => {
       try {
         if (req.method !== "POST") {
@@ -334,3 +334,5 @@ export default {
     }
   ),
 };
+
+
