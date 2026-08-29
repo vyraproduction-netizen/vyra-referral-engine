@@ -313,22 +313,31 @@ Invoke-LocalSql -Sql $workerInsertSql | Out-Null
 try {
     $workerResponse = Invoke-RestMethod `
         -Method Post `
-        -Uri "$SupabaseUrl/functions/v1/research-worker"
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"research"}'
 
     if (-not $workerResponse.ok) {
-        throw "research-worker returned ok=false"
+        throw "Controller research dispatch returned ok=false"
+    }
+    if ($workerResponse.action -ne "dispatch") {
+        throw "Controller returned an unexpected action"
+    }
+    if ($workerResponse.agent -ne "research") {
+        throw "Controller returned an unexpected agent"
     }
     if (-not $workerResponse.claimed) {
-        throw "research-worker claimed no job"
+        throw "Controller research dispatch claimed no job"
     }
     if ($workerResponse.job_id -ne $workerJobId) {
-        throw "research-worker claimed an unexpected job"
+        throw "Controller research dispatch claimed an unexpected job"
     }
     if ($workerResponse.provider -ne "mock") {
-        throw "research-worker did not use the mock provider"
+        throw "Controller research dispatch did not use the mock provider"
     }
     if ($workerResponse.research.results_count -ne 1) {
-        throw "research-worker returned an unexpected result count"
+        throw "Controller research dispatch returned an unexpected result count"
     }
 
     $workerStateSql = @"
@@ -344,10 +353,10 @@ where id = '$workerJobId'::uuid;
             Select-Object -Last 1
     )
     if ($workerStateValue.Trim() -ne "completed|1|1") {
-        throw "research-worker did not persist completed|1|1"
+        throw "Controller research dispatch did not persist completed|1|1"
     }
 
-    Write-Pass "Research Worker mock completion passed"
+    Write-Pass "Controller Research dispatch completion passed"
 }
 finally {
     $workerCleanupSql = @"
@@ -361,9 +370,9 @@ where id = '$workerJobId'::uuid;
 
     $workerCleanup = Invoke-LocalSql -Sql $workerCleanupSql
     if ($workerCleanup[-1].Trim() -ne "0") {
-        throw "Worker runtime test cleanup left a diagnostic row behind"
+        throw "Controller dispatch cleanup left a diagnostic row behind"
     }
 }
 
-Write-Pass "Research Worker diagnostic row cleaned up"
+Write-Pass "Controller dispatch diagnostic row cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
