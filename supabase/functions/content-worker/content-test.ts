@@ -7,8 +7,9 @@ import {
   runContent,
 } from "./content.ts";
 import {
-  generateMockContent,
-} from "./mock-content.ts";
+  createContentProvider,
+  resolveContentProviderName,
+} from "./content-provider.ts";
 
 function createJob(): VyraJob {
   return {
@@ -63,6 +64,15 @@ function createJob(): VyraJob {
 }
 
 Deno.test(
+  "content provider defaults to disabled",
+  () => {
+    if (resolveContentProviderName(undefined) !== "disabled") {
+      throw new Error("Missing provider must be disabled");
+    }
+  },
+);
+
+Deno.test(
   "createContentSlug is deterministic",
   () => {
     const first = createContentSlug(
@@ -91,7 +101,7 @@ Deno.test(
 
     const draft = await runContent(
       job,
-      generateMockContent,
+      createContentProvider("mock"),
     );
 
     if (draft.status !== "draft") {
@@ -106,8 +116,11 @@ Deno.test(
       throw new Error("Generated body lost the candidate title");
     }
 
-    if (draft.evidence.research === undefined) {
-      throw new Error("Research evidence was not preserved");
+    if (
+      draft.evidence.source_job_id !==
+        job.payload.source_job_id
+    ) {
+      throw new Error("Source job evidence was not preserved");
     }
   },
 );

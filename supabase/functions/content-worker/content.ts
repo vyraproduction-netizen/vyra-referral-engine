@@ -154,6 +154,8 @@ export async function runContent(
     meta_title: generated.meta_title,
     meta_description: generated.meta_description,
     evidence: {
+      source_job_id: job.payload.source_job_id,
+      request_id: job.payload.request_id,
       candidate: job.payload.candidate,
       recommendation: job.payload.recommendation,
       research: job.payload.research,

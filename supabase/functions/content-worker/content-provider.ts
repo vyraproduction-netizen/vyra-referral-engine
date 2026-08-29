@@ -1,3 +1,7 @@
+import {
+  generateMockContent,
+} from "./mock-content.ts";
+
 export type ContentGenerationInput = {
   title: string;
   url: string;
@@ -25,3 +29,37 @@ export type GeneratedContent = {
 export type ContentProvider = (
   input: ContentGenerationInput,
 ) => Promise<GeneratedContent>;
+
+export type ContentProviderName =
+  | "disabled"
+  | "mock";
+
+export function resolveContentProviderName(
+  value: string | undefined,
+): ContentProviderName {
+  const normalized = value?.trim().toLowerCase();
+
+  if (!normalized) {
+    return "disabled";
+  }
+
+  if (normalized === "mock") {
+    return "mock";
+  }
+
+  throw new Error(
+    `Unsupported CONTENT_PROVIDER: ${value}`,
+  );
+}
+
+export function createContentProvider(
+  name: ContentProviderName,
+): ContentProvider {
+  if (name === "mock") {
+    return generateMockContent;
+  }
+
+  return () => Promise.reject(
+    new Error("CONTENT_PROVIDER is not configured"),
+  );
+}
