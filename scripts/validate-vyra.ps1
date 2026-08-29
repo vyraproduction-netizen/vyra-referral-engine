@@ -104,6 +104,7 @@ try {
         "supabase/functions/_shared/vyra/supabase-job-store.ts",
         "supabase/functions/topic-scout/index.ts",
         "supabase/functions/research-worker/index.ts",
+        "supabase/functions/content-worker/index.ts",
         "supabase/functions/vyra-controller/index.ts",
         "supabase/functions/vyra-diagnostics/index.ts"
     )
