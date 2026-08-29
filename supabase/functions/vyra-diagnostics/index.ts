@@ -4,9 +4,10 @@ const names = [
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
   "SUPABASE_SECRET_KEY",
+  "VYRA_CONTROLLER_SECRET",
 ];
 
-Deno.serve(async () => {
+Deno.serve(() => {
   const environment: Record<string, string> = {};
 
   for (const name of names) {

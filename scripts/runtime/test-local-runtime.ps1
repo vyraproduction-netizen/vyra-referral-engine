@@ -209,6 +209,64 @@ if ($providerSetting -notmatch '^\s*RESEARCH_PROVIDER\s*=\s*mock\s*$') {
 }
 Write-Pass "Explicit local mock provider configuration detected"
 
+$controllerSecretSetting = Get-Content -LiteralPath $localEnvPath |
+    Where-Object {
+        $_ -match '^\s*VYRA_CONTROLLER_SECRET\s*='
+    } |
+    Select-Object -Last 1
+
+if (-not $controllerSecretSetting) {
+    throw "VYRA_CONTROLLER_SECRET is required for the local controller test"
+}
+
+$controllerSecret = (
+    $controllerSecretSetting -split '=', 2
+)[1].Trim()
+
+if (-not $controllerSecret) {
+    throw "VYRA_CONTROLLER_SECRET is empty"
+}
+
+$unauthorizedStatus = $null
+try {
+    $unauthorizedResponse = Invoke-WebRequest `
+        -UseBasicParsing `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -ContentType "application/json" `
+        -Body '{"action":"health"}'
+
+    $unauthorizedStatus = [int]$unauthorizedResponse.StatusCode
+}
+catch {
+    if ($_.Exception.Response) {
+        $unauthorizedStatus = [int]$_.Exception.Response.StatusCode
+    }
+    else {
+        throw
+    }
+}
+
+if ($unauthorizedStatus -ne 401) {
+    throw "Controller request without a secret must return HTTP 401"
+}
+Write-Pass "Controller rejects unauthenticated requests"
+
+$controllerHealth = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+    -Headers @{ apikey = $controllerSecret } `
+    -ContentType "application/json" `
+    -Body '{"action":"health"}'
+
+if (-not $controllerHealth.ok) {
+    throw "Authenticated controller health returned ok=false"
+}
+if ($controllerHealth.status -ne "online") {
+    throw "Authenticated controller health is not online"
+}
+Write-Pass "Controller authenticated health passed"
+
 $workerJobId = [guid]::NewGuid().Guid
 $workerInsertSql = @"
 insert into public.jobs (

@@ -60,9 +60,29 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function getControllerAuthConfig() {
+  const localSecret =
+    Deno.env.get("VYRA_CONTROLLER_SECRET");
+
+  if (!localSecret) {
+    return {
+      auth: "secret:vyra_controller" as const,
+    };
+  }
+
+  return {
+    auth: "secret:vyra_controller" as const,
+    env: {
+      secretKeys: {
+        vyra_controller: localSecret,
+      },
+    },
+  };
+}
+
 export default {
-  fetch: withSupabase<ControllerDatabase>(
-    { auth: "secret:vyra_controller" },
+fetch: withSupabase<ControllerDatabase>(
+    getControllerAuthConfig(),
     async (req, ctx) => {
       try {
         if (req.method !== "POST") {
