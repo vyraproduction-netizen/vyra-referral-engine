@@ -96,6 +96,7 @@ try {
     $requiredFiles = @(
         ".github/workflows/vyra-validation.yml",
         "scripts/runtime/watch-job.ps1",
+		"scripts/runtime/test-local-runtime.ps1",
         "scripts/sql/queue-diagnostics.sql",
         "deno.lock",
         "supabase/config.toml",
@@ -263,6 +264,72 @@ try {
             "FAIL" `
             "Job watcher" `
             "watch-job.ps1 not found"
+    }
+
+    $runtimeTestPath = Join-Path `
+        $ProjectRoot `
+        "scripts/runtime/test-local-runtime.ps1"
+
+    if (
+        Test-Path `
+        -LiteralPath $runtimeTestPath `
+        -PathType Leaf
+    ) {
+        $runtimeTokens = $null
+        $runtimeParseErrors = $null
+
+        [System.Management.Automation.Language.Parser]::ParseFile(
+            $runtimeTestPath,
+            [ref]$runtimeTokens,
+            [ref]$runtimeParseErrors
+        ) | Out-Null
+
+        $runtimeText = Get-Content `
+            -LiteralPath $runtimeTestPath `
+            -Raw
+
+        $requiredRuntimeMarkers = @(
+            "Production access: DISABLED",
+            "Only a local HTTP Supabase URL is allowed",
+            '$allowedHosts',
+            "127.0.0.1",
+            "finally",
+            "payload->>'request_id'"
+        )
+
+        $missingRuntimeMarkers = @(
+            $requiredRuntimeMarkers |
+                Where-Object {
+                    $runtimeText -notmatch [regex]::Escape($_)
+                }
+        )
+
+        if ($runtimeParseErrors.Count -gt 0) {
+            Add-Result `
+                "FAIL" `
+                "Runtime test" `
+                "PowerShell syntax error"
+        }
+        elseif ($missingRuntimeMarkers.Count -gt 0) {
+            Add-Result `
+                "FAIL" `
+                "Runtime test" `
+                ("Missing safety marker(s): {0}" -f (
+                    $missingRuntimeMarkers -join ", "
+                ))
+        }
+        else {
+            Add-Result `
+                "PASS" `
+                "Runtime test" `
+                "Local-only test with cleanup detected"
+        }
+    }
+    else {
+        Add-Result `
+            "FAIL" `
+            "Runtime test" `
+            "test-local-runtime.ps1 not found"
     }
 
     $queueSqlPath = Join-Path `
