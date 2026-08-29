@@ -465,6 +465,26 @@ order by agent;
     if (-not $contentResponse.content.created) {
         throw "Controller Content dispatch created no draft"
     }
+    if (-not $contentResponse.qa_job) {
+        throw "Controller Content dispatch created no QA job"
+    }
+
+    $qaJobId = [string]$contentResponse.qa_job.id
+    if (-not $qaJobId) {
+        throw "Controller Content dispatch returned no QA job id"
+    }
+
+    $expectedQaDedupeKey =
+        "$($contentResponse.content.id):content_qa"
+
+    if (
+        $contentResponse.qa_job.dedupeKey -ne
+            $expectedQaDedupeKey
+    ) {
+        throw "Controller Content dispatch returned an unexpected QA dedupe key"
+    }
+
+    Write-Pass "Controller Content dispatch created a QA job"
 
     $contentStateSql = @"
 select
@@ -489,7 +509,24 @@ where j.id = '$contentJobId'::uuid
     }
 
     Write-Pass "Controller Content dispatch completed a draft"
-    Write-Pass "Controller four-stage pipeline completed"
+
+    $qaStateSql = @"
+select status || '|' || attempts || '|' || task_type
+from public.jobs
+where id = '$qaJobId'::uuid;
+"@
+
+    $qaState = Invoke-LocalSql -Sql $qaStateSql
+    $qaStateValue = [string](
+        @($qaState) |
+            Select-Object -Last 1
+    )
+    if ($qaStateValue.Trim() -ne "queued|0|content_qa") {
+        throw "QA job did not persist queued|0|content_qa"
+    }
+
+    Write-Pass "QA job persisted as queued"
+    Write-Pass "Controller five-stage queue pipeline passed"
 }
 finally {
     $pipelineCleanupSql = @"
@@ -517,9 +554,9 @@ select
             Select-Object -Last 1
     )
     if ($pipelineCleanupValue.Trim() -ne "0|0") {
-        throw "Four-stage pipeline cleanup left diagnostic rows behind"
+        throw "Five-stage queue cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Four-stage pipeline diagnostic rows cleaned up"
+Write-Pass "Five-stage queue diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green

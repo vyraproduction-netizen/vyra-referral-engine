@@ -1,6 +1,7 @@
 import {
   claimContentJob,
   completeContentJob,
+  createContentQaJob,
   retryContentJob,
   saveContentDraft,
 } from "./db.ts";
@@ -43,12 +44,19 @@ Deno.serve(async () => {
 
     const content = await saveContentDraft(draft);
 
+    const qaJob = await createContentQaJob(
+      job,
+      draft,
+      content,
+    );
+
     const result = {
       content_id: content.id,
       slug: content.slug,
       status: content.status,
       created: content.created,
       provider: contentProviderName,
+      qa_job_id: qaJob?.id ?? null,
     };
 
     await completeContentJob(job.id, result);
@@ -59,6 +67,7 @@ Deno.serve(async () => {
       job_id: job.id,
       provider: contentProviderName,
       content,
+      qa_job: qaJob,
     });
   } catch (error) {
     if (job?.id) {

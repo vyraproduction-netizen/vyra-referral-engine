@@ -4,7 +4,14 @@ import {
 } from "../_shared/vyra/supabase-job-store.ts";
 import type {
   ContentDraft,
+  ContentJob,
 } from "./content.ts";
+import {
+  enqueueQaJob,
+} from "./qa-job.ts";
+import type {
+  SavedContentDraft,
+} from "./qa-job.ts";
 
 export async function claimContentJob() {
   const store = createSupabaseJobStore();
@@ -76,6 +83,20 @@ export async function saveContentDraft(
     status: data.status,
     created: true,
   };
+}
+
+export async function createContentQaJob(
+  job: ContentJob,
+  draft: ContentDraft,
+  saved: SavedContentDraft,
+) {
+  const store = createSupabaseJobStore();
+  return await enqueueQaJob(
+    store,
+    job,
+    draft,
+    saved,
+  );
 }
 
 export async function completeContentJob(
