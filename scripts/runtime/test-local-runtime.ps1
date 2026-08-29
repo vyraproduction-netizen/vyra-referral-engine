@@ -267,8 +267,8 @@ if ($controllerHealth.status -ne "online") {
 }
 Write-Pass "Controller authenticated health passed"
 
-$workerJobId = [guid]::NewGuid().Guid
-$workerInsertSql = @"
+$scoutJobId = [guid]::NewGuid().Guid
+$scoutInsertSql = @"
 insert into public.jobs (
   id,
   agent,
@@ -279,38 +279,68 @@ insert into public.jobs (
   max_attempts
 )
 values (
-  '$workerJobId',
-  'research',
-  'topic_research',
+  '$scoutJobId',
+  'topic_scout',
+  'topic_discovery',
   'queued',
   -1000,
   '{
-    "request_id":"$workerJobId",
+    "request_id":"$scoutJobId",
     "language":"ru",
     "region":"EU",
-    "topic_seed":"diagnostic image enhancement",
-    "candidate":{
-      "title":"Diagnostic mock candidate",
-      "url":"https://example.local/runtime-worker",
-      "opportunity_score":0.8,
-      "commercial_intent":0.8,
-      "content_potential":0.8,
-      "referral_potential":0.8,
-      "relevance":0.8,
-      "evidence_source":"local-diagnostic"
-    },
-    "recommended_action":"investigate_referral_program",
-    "_meta":{
-      "dedupe_key":"diagnostic:research-worker:$workerJobId"
+    "topic_seed":"image enhancement",
+    "constraints":{
+      "min_score":0.7,
+      "max_topics":3
     }
   }'::jsonb,
   3
 );
 "@
 
-Invoke-LocalSql -Sql $workerInsertSql | Out-Null
+Invoke-LocalSql -Sql $scoutInsertSql | Out-Null
 
 try {
+    $scoutResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"topic_scout"}'
+
+    if (-not $scoutResponse.ok) {
+        throw "Controller Topic Scout dispatch returned ok=false"
+    }
+    if ($scoutResponse.action -ne "dispatch") {
+        throw "Controller returned an unexpected Topic Scout action"
+    }
+    if ($scoutResponse.agent -ne "topic_scout") {
+        throw "Controller returned an unexpected Topic Scout agent"
+    }
+    if (-not $scoutResponse.claimed) {
+        throw "Controller Topic Scout dispatch claimed no job"
+    }
+    if ($scoutResponse.job_id -ne $scoutJobId) {
+        throw "Controller Topic Scout dispatch claimed an unexpected job"
+    }
+    if ($scoutResponse.completed.status -ne "completed") {
+        throw "Controller Topic Scout dispatch did not complete the scout job"
+    }
+
+    $insertedResearchJobs = @(
+        $scoutResponse.scout.result.inserted_research_jobs
+    )
+    if ($insertedResearchJobs.Count -ne 1) {
+        throw "Topic Scout must insert exactly one diagnostic research job"
+    }
+
+    $researchJobId = [string]$insertedResearchJobs[0].id
+    if (-not $researchJobId) {
+        throw "Topic Scout returned no research job id"
+    }
+
+    Write-Pass "Controller Topic Scout dispatch created a research job"
+
     $workerResponse = Invoke-RestMethod `
         -Method Post `
         -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
@@ -330,7 +360,7 @@ try {
     if (-not $workerResponse.claimed) {
         throw "Controller research dispatch claimed no job"
     }
-    if ($workerResponse.job_id -ne $workerJobId) {
+    if ($workerResponse.job_id -ne $researchJobId) {
         throw "Controller research dispatch claimed an unexpected job"
     }
     if ($workerResponse.provider -ne "mock") {
@@ -340,39 +370,42 @@ try {
         throw "Controller research dispatch returned an unexpected result count"
     }
 
-    $workerStateSql = @"
-select status || '|' || attempts || '|' ||
-       coalesce(result->'research'->>'results_count', '')
+    $pipelineStateSql = @"
+select agent || '|' || status || '|' || attempts
 from public.jobs
-where id = '$workerJobId'::uuid;
+where id = '$scoutJobId'::uuid
+   or payload->>'request_id' = '$scoutJobId'
+order by agent;
 "@
 
-    $workerState = Invoke-LocalSql -Sql $workerStateSql
-    $workerStateValue = [string](
-        $workerState |
-            Select-Object -Last 1
-    )
-    if ($workerStateValue.Trim() -ne "completed|1|1") {
-        throw "Controller research dispatch did not persist completed|1|1"
+    $pipelineState = Invoke-LocalSql -Sql $pipelineStateSql
+    $pipelineStateText = $pipelineState -join "`n"
+    if ($pipelineStateText -notmatch "research\|completed\|1") {
+        throw "Research job did not persist completed|1"
+    }
+    if ($pipelineStateText -notmatch "topic_scout\|completed\|1") {
+        throw "Topic Scout job did not persist completed|1"
     }
 
-    Write-Pass "Controller Research dispatch completion passed"
+    Write-Pass "Controller two-agent pipeline completed"
 }
 finally {
-    $workerCleanupSql = @"
+    $pipelineCleanupSql = @"
 delete from public.jobs
-where id = '$workerJobId'::uuid;
+where id = '$scoutJobId'::uuid
+   or payload->>'request_id' = '$scoutJobId';
 
 select count(*)
 from public.jobs
-where id = '$workerJobId'::uuid;
+where id = '$scoutJobId'::uuid
+   or payload->>'request_id' = '$scoutJobId';
 "@
 
-    $workerCleanup = Invoke-LocalSql -Sql $workerCleanupSql
-    if ($workerCleanup[-1].Trim() -ne "0") {
-        throw "Controller dispatch cleanup left a diagnostic row behind"
+    $pipelineCleanup = Invoke-LocalSql -Sql $pipelineCleanupSql
+    if ($pipelineCleanup[-1].Trim() -ne "0") {
+        throw "Two-agent pipeline cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Controller dispatch diagnostic row cleaned up"
+Write-Pass "Two-agent pipeline diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
