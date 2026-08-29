@@ -1,5 +1,9 @@
-import type { VyraJob } from "../_shared/vyra/job-store.ts";
-
+import type {
+  VyraJob,
+} from "../_shared/vyra/job-store.ts";
+import type {
+  ResearchProvider,
+} from "./research-provider.ts";
 import {
   researchWithTavily,
 } from "./tavily-research.ts";
@@ -131,6 +135,7 @@ export function assertResearchJob(
 
 export async function runResearch(
   job: ResearchJob,
+  researchProvider: ResearchProvider = researchWithTavily,
 ): Promise<ResearchFinding> {
   if (job.agent !== "research") {
     throw new Error("Invalid agent");
@@ -144,13 +149,13 @@ export async function runResearch(
     throw new Error("Job id is required");
   }
 
-  const candidate = job.payload?.candidate;
+  const candidate = job.payload.candidate;
 
-  if (!candidate?.url) {
+  if (!candidate.url) {
     throw new Error("Candidate URL is required");
   }
 
-  if (!candidate?.title) {
+  if (!candidate.title) {
     throw new Error("Candidate title is required");
   }
 
@@ -162,7 +167,7 @@ export async function runResearch(
     "pricing",
   ].join(" ");
 
-  const tavily = await researchWithTavily(query);
+  const research = await researchProvider(query);
 
   return {
     candidate_url: candidate.url,
@@ -182,10 +187,10 @@ export async function runResearch(
     evidence_source:
       candidate.evidence_source,
     research: {
-      query: tavily.query,
-      answer: tavily.answer ?? null,
-      results_count: tavily.results.length,
-      sources: tavily.results.slice(0, 5),
+      query: research.query,
+      answer: research.answer ?? null,
+      results_count: research.results.length,
+      sources: research.results.slice(0, 5),
     },
   };
 }

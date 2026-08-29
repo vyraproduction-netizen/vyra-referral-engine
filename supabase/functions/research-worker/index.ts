@@ -5,9 +5,20 @@ import {
 } from "./db.ts";
 
 import {
+  createResearchProvider,
+  resolveResearchProviderName,
+} from "./research-provider.ts";
+import {
   assertResearchJob,
   runResearch,
 } from "./research.ts";
+
+const researchProviderName = resolveResearchProviderName(
+  Deno.env.get("RESEARCH_PROVIDER"),
+);
+const researchProvider = createResearchProvider(
+  researchProviderName,
+);
 
 Deno.serve(async () => {
   let job = null;
@@ -25,7 +36,10 @@ Deno.serve(async () => {
 
     assertResearchJob(job);
 
-    const researchResult = await runResearch(job);
+    const researchResult = await runResearch(
+      job,
+      researchProvider,
+    );
 
     const completion = await completeResearchJob(
       job.id,
@@ -36,8 +50,9 @@ Deno.serve(async () => {
       ok: true,
       claimed: true,
       job_id: job.id,
+      provider: researchProviderName,
       candidate_url:
-        job.payload?.candidate?.url ?? null,
+        job.payload.candidate.url,
       research: {
         results_count:
           researchResult.research.results_count,
@@ -47,7 +62,7 @@ Deno.serve(async () => {
       completion,
     });
   } catch (error) {
-	if (job?.id) {
+    if (job?.id) {
       await retryResearchJob(
         job.id,
         error instanceof Error
@@ -55,9 +70,11 @@ Deno.serve(async () => {
           : String(error),
       );
     }
+
     return Response.json(
       {
         ok: false,
+        provider: researchProviderName,
         error:
           error instanceof Error
             ? error.message

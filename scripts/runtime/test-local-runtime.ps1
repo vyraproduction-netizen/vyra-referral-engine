@@ -189,4 +189,123 @@ where payload->>'request_id' = '$requestId';
 }
 
 Write-Pass "Diagnostic rows cleaned up"
+
+$localEnvPath = Join-Path `
+    $ProjectRoot `
+    "supabase/functions/.env"
+
+if (-not (Test-Path -LiteralPath $localEnvPath -PathType Leaf)) {
+    throw "Local functions env file not found: $localEnvPath"
+}
+
+$providerSetting = Get-Content -LiteralPath $localEnvPath |
+    Where-Object {
+        $_ -match '^\s*RESEARCH_PROVIDER\s*='
+    } |
+    Select-Object -Last 1
+
+if ($providerSetting -notmatch '^\s*RESEARCH_PROVIDER\s*=\s*mock\s*$') {
+    throw "Runtime worker test requires RESEARCH_PROVIDER=mock"
+}
+Write-Pass "Explicit local mock provider configuration detected"
+
+$workerJobId = [guid]::NewGuid().Guid
+$workerInsertSql = @"
+insert into public.jobs (
+  id,
+  agent,
+  task_type,
+  status,
+  priority,
+  payload,
+  max_attempts
+)
+values (
+  '$workerJobId',
+  'research',
+  'topic_research',
+  'queued',
+  -1000,
+  '{
+    "request_id":"$workerJobId",
+    "language":"ru",
+    "region":"EU",
+    "topic_seed":"diagnostic image enhancement",
+    "candidate":{
+      "title":"Diagnostic mock candidate",
+      "url":"https://example.local/runtime-worker",
+      "opportunity_score":0.8,
+      "commercial_intent":0.8,
+      "content_potential":0.8,
+      "referral_potential":0.8,
+      "relevance":0.8,
+      "evidence_source":"local-diagnostic"
+    },
+    "recommended_action":"investigate_referral_program",
+    "_meta":{
+      "dedupe_key":"diagnostic:research-worker:$workerJobId"
+    }
+  }'::jsonb,
+  3
+);
+"@
+
+Invoke-LocalSql -Sql $workerInsertSql | Out-Null
+
+try {
+    $workerResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/research-worker"
+
+    if (-not $workerResponse.ok) {
+        throw "research-worker returned ok=false"
+    }
+    if (-not $workerResponse.claimed) {
+        throw "research-worker claimed no job"
+    }
+    if ($workerResponse.job_id -ne $workerJobId) {
+        throw "research-worker claimed an unexpected job"
+    }
+    if ($workerResponse.provider -ne "mock") {
+        throw "research-worker did not use the mock provider"
+    }
+    if ($workerResponse.research.results_count -ne 1) {
+        throw "research-worker returned an unexpected result count"
+    }
+
+    $workerStateSql = @"
+select status || '|' || attempts || '|' ||
+       coalesce(result->'research'->>'results_count', '')
+from public.jobs
+where id = '$workerJobId'::uuid;
+"@
+
+    $workerState = Invoke-LocalSql -Sql $workerStateSql
+    $workerStateValue = [string](
+        $workerState |
+            Select-Object -Last 1
+    )
+    if ($workerStateValue.Trim() -ne "completed|1|1") {
+        throw "research-worker did not persist completed|1|1"
+    }
+
+    Write-Pass "Research Worker mock completion passed"
+}
+finally {
+    $workerCleanupSql = @"
+delete from public.jobs
+where id = '$workerJobId'::uuid;
+
+select count(*)
+from public.jobs
+where id = '$workerJobId'::uuid;
+"@
+
+    $workerCleanup = Invoke-LocalSql -Sql $workerCleanupSql
+    if ($workerCleanup[-1].Trim() -ne "0") {
+        throw "Worker runtime test cleanup left a diagnostic row behind"
+    }
+}
+
+Write-Pass "Research Worker diagnostic row cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
