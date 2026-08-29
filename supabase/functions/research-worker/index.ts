@@ -1,6 +1,7 @@
 import {
   claimResearchJob,
   completeResearchJob,
+  createResearchContentJob,
   retryResearchJob,
 } from "./db.ts";
 
@@ -41,6 +42,11 @@ Deno.serve(async () => {
       researchProvider,
     );
 
+    const contentJob = await createResearchContentJob(
+      job,
+      researchResult,
+    );
+
     const completion = await completeResearchJob(
       job.id,
       researchResult,
@@ -59,6 +65,7 @@ Deno.serve(async () => {
         answer_present:
           Boolean(researchResult.research.answer),
       },
+      content_job: contentJob,
       completion,
     });
   } catch (error) {

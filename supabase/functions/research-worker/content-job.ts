@@ -1,4 +1,6 @@
 import type {
+  CreatedVyraJob,
+  JobStore,
   VyraJobInput,
 } from "../_shared/vyra/job-store.ts";
 import type {
@@ -36,6 +38,11 @@ export type ContentJob = VyraJobInput & {
   task_type: "content_draft";
   payload: ContentJobPayload;
 };
+
+type ContentJobStore = Pick<
+  JobStore,
+  "createMany" | "existsByDedupeKey"
+>;
 
 export function buildContentJob(
   sourceJob: ResearchJob,
@@ -88,4 +95,32 @@ export function buildContentJob(
       },
     },
   };
+}
+
+export async function enqueueContentJob(
+  store: ContentJobStore,
+  sourceJob: ResearchJob,
+  finding: ResearchFinding,
+): Promise<CreatedVyraJob | null> {
+  const contentJob = buildContentJob(
+    sourceJob,
+    finding,
+  );
+
+  if (!contentJob) {
+    return null;
+  }
+
+  const dedupeKey =
+    contentJob.payload._meta.dedupe_key;
+
+  if (await store.existsByDedupeKey(dedupeKey)) {
+    return null;
+  }
+
+  const created = await store.createMany([
+    contentJob,
+  ]);
+
+  return created[0] ?? null;
 }

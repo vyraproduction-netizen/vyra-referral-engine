@@ -341,6 +341,31 @@ try {
 
     Write-Pass "Controller Topic Scout dispatch created a research job"
 
+    $promoteResearchSql = @"
+update public.jobs
+set payload = jsonb_set(
+  payload,
+  '{recommended_action}',
+  to_jsonb('investigate_referral_program'::text),
+  true
+)
+where id = '$researchJobId'::uuid;
+
+select payload->>'recommended_action'
+from public.jobs
+where id = '$researchJobId'::uuid;
+"@
+
+    $promotionResult = Invoke-LocalSql -Sql $promoteResearchSql
+    if (
+        $promotionResult[-1].Trim() -ne
+            "investigate_referral_program"
+    ) {
+        throw "Unable to promote the diagnostic research job"
+    }
+
+    Write-Pass "Diagnostic research job promoted to a content candidate"
+
     $workerResponse = Invoke-RestMethod `
         -Method Post `
         -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
@@ -369,6 +394,26 @@ try {
     if ($workerResponse.research.results_count -ne 1) {
         throw "Controller research dispatch returned an unexpected result count"
     }
+    if (-not $workerResponse.content_job) {
+        throw "Controller research dispatch created no content job"
+    }
+
+    $contentJobId = [string]$workerResponse.content_job.id
+    if (-not $contentJobId) {
+        throw "Controller research dispatch returned no content job id"
+    }
+
+    $expectedContentDedupeKey =
+        "$researchJobId`:content_draft:https://example.local/research/ai-tools"
+
+    if (
+        $workerResponse.content_job.dedupeKey -ne
+            $expectedContentDedupeKey
+    ) {
+        throw "Controller research dispatch returned an unexpected content dedupe key"
+    }
+
+    Write-Pass "Controller Research dispatch created a content job"
 
     $pipelineStateSql = @"
 select agent || '|' || status || '|' || attempts
@@ -383,11 +428,14 @@ order by agent;
     if ($pipelineStateText -notmatch "research\|completed\|1") {
         throw "Research job did not persist completed|1"
     }
+    if ($pipelineStateText -notmatch "content\|queued\|0") {
+        throw "Content job did not persist queued|0"
+    }
     if ($pipelineStateText -notmatch "topic_scout\|completed\|1") {
         throw "Topic Scout job did not persist completed|1"
     }
 
-    Write-Pass "Controller two-agent pipeline completed"
+    Write-Pass "Controller three-agent queue pipeline passed"
 }
 finally {
     $pipelineCleanupSql = @"
@@ -403,9 +451,9 @@ where id = '$scoutJobId'::uuid
 
     $pipelineCleanup = Invoke-LocalSql -Sql $pipelineCleanupSql
     if ($pipelineCleanup[-1].Trim() -ne "0") {
-        throw "Two-agent pipeline cleanup left diagnostic rows behind"
+        throw "Three-agent pipeline cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Two-agent pipeline diagnostic rows cleaned up"
+Write-Pass "Three-agent pipeline diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green

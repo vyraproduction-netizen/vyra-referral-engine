@@ -1,5 +1,6 @@
 import {
   buildContentJob,
+  enqueueContentJob,
 } from "./content-job.ts";
 import type {
   ResearchFinding,
@@ -123,6 +124,61 @@ Deno.test(
     if (contentJob !== null) {
       throw new Error(
         "Discarded finding must not create a content job",
+      );
+    }
+  },
+);
+
+Deno.test(
+  "enqueueContentJob creates one new job",
+  async () => {
+    let createCalls = 0;
+
+    const created = await enqueueContentJob(
+      {
+        existsByDedupeKey: async () => false,
+        createMany: () => {
+          createCalls += 1;
+
+          return Promise.resolve([
+            {
+              id: "00000000-0000-4000-8000-000000000911",
+              dedupeKey:
+                "00000000-0000-4000-8000-000000000910:content_draft:https://example.local/enhancer",
+            },
+          ]);
+        },
+      },
+      createSourceJob(),
+      createFinding(),
+    );
+
+    if (!created || createCalls !== 1) {
+      throw new Error("Expected one created content job");
+    }
+  },
+);
+
+Deno.test(
+  "enqueueContentJob skips an existing dedupe key",
+  async () => {
+    let createCalls = 0;
+
+    const created = await enqueueContentJob(
+      {
+        existsByDedupeKey: async () => true,
+        createMany: () => {
+          createCalls += 1;
+          return Promise.resolve([]);
+        },
+      },
+      createSourceJob(),
+      createFinding(),
+    );
+
+    if (created !== null || createCalls !== 0) {
+      throw new Error(
+        "Existing dedupe key must skip insertion",
       );
     }
   },
