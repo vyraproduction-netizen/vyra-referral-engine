@@ -128,45 +128,48 @@ fetch: withSupabase<ControllerDatabase>(
             typeof body.agent === "string" && body.agent.trim()
               ? body.agent.trim()
               : "topic_scout";
+        if (agent === "research" || agent === "content") {
+          const workerName = agent === "research"
+            ? "research-worker"
+            : "content-worker";
 
-        if (agent === "research") {
-		  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+          const supabaseUrl = Deno.env.get("SUPABASE_URL");
 
-		  if (!supabaseUrl) {
-			return Response.json(
-			  { ok: false, error: "SUPABASE_URL is required" },
-			  { status: 500 }
-			);
-		  }
+          if (!supabaseUrl) {
+            return Response.json(
+              { ok: false, error: "SUPABASE_URL is required" },
+              { status: 500 }
+            );
+          }
 
-		const workerResponse = await fetch(
-		  `${supabaseUrl}/functions/v1/research-worker`,
-		  {
-			method: "POST",
-			headers: {
-			  "Content-Type": "application/json",
-			},
-			body: "{}",
-		  }
-		);
+          const workerResponse = await fetch(
+            `${supabaseUrl}/functions/v1/${workerName}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: "{}",
+            }
+          );
 
-		const workerData = await workerResponse.json();
+          const workerData = await workerResponse.json();
 
-		return Response.json(
-		  {
-			action: "dispatch",
-			agent: "research",
-			...workerData,
-		  },
-		  { status: workerResponse.status }
-		);
-	  }
+          return Response.json(
+            {
+              action: "dispatch",
+              agent,
+              ...workerData,
+            },
+            { status: workerResponse.status }
+          );
+        }
 
-	  if (agent !== "topic_scout") {
+        if (agent !== "topic_scout") {
 		return Response.json(
 		  {
 			ok: false,
-			error: "Dispatch supports topic_scout and research only",
+			error: "Dispatch supports topic_scout, research, and content only",
 		  },
 		{ status: 400 }
 	  );

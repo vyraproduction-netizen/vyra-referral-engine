@@ -436,24 +436,90 @@ order by agent;
     }
 
     Write-Pass "Controller three-agent queue pipeline passed"
+
+    $contentResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"content"}'
+
+    if (-not $contentResponse.ok) {
+        throw "Controller Content dispatch returned ok=false"
+    }
+    if ($contentResponse.action -ne "dispatch") {
+        throw "Controller returned an unexpected Content action"
+    }
+    if ($contentResponse.agent -ne "content") {
+        throw "Controller returned an unexpected Content agent"
+    }
+    if (-not $contentResponse.claimed) {
+        throw "Controller Content dispatch claimed no job"
+    }
+    if ($contentResponse.job_id -ne $contentJobId) {
+        throw "Controller Content dispatch claimed an unexpected job"
+    }
+    if ($contentResponse.provider -ne "mock") {
+        throw "Controller Content dispatch did not use the mock provider"
+    }
+    if (-not $contentResponse.content.created) {
+        throw "Controller Content dispatch created no draft"
+    }
+
+    $contentStateSql = @"
+select
+  j.status || '|' ||
+  j.attempts || '|' ||
+  c.status || '|' ||
+  (c.id::text = j.result->>'content_id')
+from public.jobs j
+join public.content c
+  on c.id = (j.result->>'content_id')::uuid
+where j.id = '$contentJobId'::uuid
+  and c.evidence->>'request_id' = '$scoutJobId';
+"@
+
+    $contentState = Invoke-LocalSql -Sql $contentStateSql
+    $contentStateValue = [string](
+        @($contentState) |
+            Select-Object -Last 1
+    )
+    if ($contentStateValue.Trim() -ne "completed|1|draft|true") {
+        throw "Content pipeline did not persist completed|1|draft|true"
+    }
+
+    Write-Pass "Controller Content dispatch completed a draft"
+    Write-Pass "Controller four-stage pipeline completed"
 }
 finally {
     $pipelineCleanupSql = @"
+delete from public.content
+where evidence->>'request_id' = '$scoutJobId';
+
 delete from public.jobs
 where id = '$scoutJobId'::uuid
    or payload->>'request_id' = '$scoutJobId';
 
-select count(*)
-from public.jobs
-where id = '$scoutJobId'::uuid
-   or payload->>'request_id' = '$scoutJobId';
+select
+  (select count(*)
+   from public.jobs
+   where id = '$scoutJobId'::uuid
+      or payload->>'request_id' = '$scoutJobId')
+  || '|' ||
+  (select count(*)
+   from public.content
+   where evidence->>'request_id' = '$scoutJobId');
 "@
 
     $pipelineCleanup = Invoke-LocalSql -Sql $pipelineCleanupSql
-    if ($pipelineCleanup[-1].Trim() -ne "0") {
-        throw "Three-agent pipeline cleanup left diagnostic rows behind"
+    $pipelineCleanupValue = [string](
+        @($pipelineCleanup) |
+            Select-Object -Last 1
+    )
+    if ($pipelineCleanupValue.Trim() -ne "0|0") {
+        throw "Four-stage pipeline cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Three-agent pipeline diagnostic rows cleaned up"
+Write-Pass "Four-stage pipeline diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
