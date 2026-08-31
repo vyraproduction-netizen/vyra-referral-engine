@@ -617,6 +617,87 @@ where id = '$publishJobId'::uuid;
 
     Write-Pass "Publisher job persisted as queued"
 
+    $publisherResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"publisher"}'
+
+    if (-not $publisherResponse.ok) {
+        throw "Controller Publisher dispatch returned ok=false"
+    }
+    if ($publisherResponse.action -ne "dispatch") {
+        throw "Controller Publisher dispatch returned an unexpected action"
+    }
+    if ($publisherResponse.agent -ne "publisher") {
+        throw "Controller Publisher dispatch returned an unexpected agent"
+    }
+    if (-not $publisherResponse.claimed) {
+        throw "Controller Publisher dispatch claimed no job"
+    }
+    if ($publisherResponse.job_id -ne $publishJobId) {
+        throw "Controller Publisher dispatch claimed an unexpected job"
+    }
+    if ($publisherResponse.provider -ne "mock") {
+        throw "Controller Publisher dispatch did not use the mock provider"
+    }
+    if (
+        $publisherResponse.publication.content_id -ne
+            $contentResponse.content.id
+    ) {
+        throw "Controller Publisher returned an unexpected content id"
+    }
+
+    $expectedPublishedUrl =
+        "https://example.local/published/$($contentResponse.content.slug)"
+
+    if (
+        $publisherResponse.publication.published_url -ne
+            $expectedPublishedUrl
+    ) {
+        throw "Controller Publisher returned an unexpected URL"
+    }
+    if ($publisherResponse.reused) {
+        throw "Controller Publisher unexpectedly reused a result"
+    }
+
+    Write-Pass "Controller Publisher dispatch published the content"
+
+    $publishedStateSql = @"
+select
+  j.status || '|' ||
+  j.attempts || '|' ||
+  c.status || '|' ||
+  (c.published_url = '$expectedPublishedUrl') || '|' ||
+  (j.result->>'provider' = 'mock') || '|' ||
+  (j.result->>'reused' = 'false')
+from public.jobs j
+join public.content c
+  on c.id = (j.payload->>'content_id')::uuid
+where j.id = '$publishJobId'::uuid;
+"@
+
+    $publishedState =
+        Invoke-LocalSql -Sql $publishedStateSql
+
+    $publishedStateValue = [string](
+        @($publishedState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $publishedStateValue.Trim() -ne
+            "completed|1|published|true|true|true"
+    ) {
+        throw (
+            "Publisher pipeline did not persist " +
+            "completed|1|published|true|true|true"
+        )
+    }
+
+    Write-Pass "Publisher result persisted as published"
+
     $qaCompletedStateSql = @"
 select
   j.status || '|' ||
@@ -640,16 +721,16 @@ where j.id = '$qaJobId'::uuid;
 
     if (
         $qaCompletedStateValue.Trim() -ne
-            "completed|1|approved|true|true"
+            "completed|1|published|true|true"
     ) {
         throw (
             "QA pipeline did not persist " +
-            "completed|1|approved|true|true"
+            "completed|1|published|true|true"
         )
     }
 
-    Write-Pass "QA result persisted as approved with score 1"
-    Write-Pass "Controller seven-stage queue pipeline passed"
+    Write-Pass "QA result remained valid after publication"
+    Write-Pass "Controller eight-stage pipeline passed"
 }
 finally {
     $pipelineCleanupSql = @"
@@ -677,9 +758,9 @@ select
             Select-Object -Last 1
     )
     if ($pipelineCleanupValue.Trim() -ne "0|0") {
-        throw "Seven-stage queue cleanup left diagnostic rows behind"
+        throw "Eight-stage pipeline cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Seven-stage queue diagnostic rows cleaned up"
+Write-Pass "Eight-stage pipeline diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
