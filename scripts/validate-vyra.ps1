@@ -105,6 +105,7 @@ try {
         "supabase/functions/topic-scout/index.ts",
         "supabase/functions/research-worker/index.ts",
         "supabase/functions/content-worker/index.ts",
+        "supabase/functions/qa-worker/index.ts",
         "supabase/functions/vyra-controller/index.ts",
         "supabase/functions/vyra-diagnostics/index.ts"
     )
