@@ -268,6 +268,10 @@ if ($controllerHealth.status -ne "online") {
 Write-Pass "Controller authenticated health passed"
 
 $scoutJobId = [guid]::NewGuid().Guid
+$programId = "00000000-0000-0000-0000-000000000000"
+$referralLinkId = "00000000-0000-0000-0000-000000000000"
+$runtimeProgramUrl =
+    "https://example.local/runtime-program/$scoutJobId"
 $scoutInsertSql = @"
 insert into public.jobs (
   id,
@@ -344,9 +348,14 @@ try {
     $promoteResearchSql = @"
 update public.jobs
 set payload = jsonb_set(
-  payload,
-  '{recommended_action}',
-  to_jsonb('investigate_referral_program'::text),
+  jsonb_set(
+    payload,
+    '{recommended_action}',
+    to_jsonb('investigate_referral_program'::text),
+    true
+  ),
+  '{candidate,url}',
+  to_jsonb('$runtimeProgramUrl'::text),
   true
 )
 where id = '$researchJobId'::uuid;
@@ -394,6 +403,69 @@ where id = '$researchJobId'::uuid;
     if ($workerResponse.research.results_count -ne 1) {
         throw "Controller research dispatch returned an unexpected result count"
     }
+    if (-not $workerResponse.program) {
+        throw "Controller research dispatch created no program candidate"
+    }
+    if (-not $workerResponse.program.created) {
+        throw "Controller research dispatch did not create a new program"
+    }
+    if ($workerResponse.program.status -ne "candidate") {
+        throw "Controller research dispatch returned an unexpected program status"
+    }
+
+    $programId = [string]$workerResponse.program.id
+    if (-not $programId) {
+        throw "Controller research dispatch returned no program id"
+    }
+    if (-not $workerResponse.referral_link) {
+        throw "Controller research dispatch created no referral link"
+    }
+    if (-not $workerResponse.referral_link.created) {
+        throw "Controller research dispatch did not create a new referral link"
+    }
+    if ($workerResponse.referral_link.status -ne "paused") {
+        throw "Discovered referral link was not paused"
+    }
+    if ($workerResponse.referral_link.program_id -ne $programId) {
+        throw "Referral link was connected to an unexpected program"
+    }
+
+    $referralLinkId =
+        [string]$workerResponse.referral_link.id
+    if (-not $referralLinkId) {
+        throw "Controller research dispatch returned no referral link id"
+    }
+
+    $programStateSql = @"
+select
+  p.status || '|' ||
+  r.status || '|' ||
+  (r.program_id = p.id) || '|' ||
+  (p.notes::jsonb->>'request_id' = '$scoutJobId')
+from public.programs p
+join public.referral_links r
+  on r.program_id = p.id
+where p.id = '$programId'::uuid
+  and r.id = '$referralLinkId'::uuid
+  and p.official_url = '$runtimeProgramUrl';
+"@
+
+    $programState =
+        Invoke-LocalSql -Sql $programStateSql
+    $programStateValue = [string](
+        @($programState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $programStateValue.Trim() -ne
+            "candidate|paused|true|true"
+    ) {
+        throw "Program and referral link state was not persisted correctly"
+    }
+
+    Write-Pass "Research result persisted a candidate program"
+    Write-Pass "Research result persisted a paused referral link"
     if (-not $workerResponse.content_job) {
         throw "Controller research dispatch created no content job"
     }
@@ -404,7 +476,7 @@ where id = '$researchJobId'::uuid;
     }
 
     $expectedContentDedupeKey =
-        "$researchJobId`:content_draft:https://example.local/research/ai-tools"
+        "$researchJobId`:content_draft:$runtimeProgramUrl"
 
     if (
         $workerResponse.content_job.dedupeKey -ne
@@ -730,10 +802,102 @@ where j.id = '$qaJobId'::uuid;
     }
 
     Write-Pass "QA result remained valid after publication"
+
+    $duplicateResearchJobId = [guid]::NewGuid().Guid
+    $duplicateResearchSql = @"
+insert into public.jobs (
+  id,
+  agent,
+  task_type,
+  status,
+  priority,
+  payload,
+  max_attempts
+)
+select
+  '$duplicateResearchJobId'::uuid,
+  agent,
+  task_type,
+  'queued',
+  -1000,
+  payload,
+  max_attempts
+from public.jobs
+where id = '$researchJobId'::uuid;
+"@
+
+    Invoke-LocalSql -Sql $duplicateResearchSql |
+        Out-Null
+
+    $duplicateResearchResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"research"}'
+
+    if (-not $duplicateResearchResponse.ok) {
+        throw "Duplicate research dispatch returned ok=false"
+    }
+    if (
+        $duplicateResearchResponse.job_id -ne
+            $duplicateResearchJobId
+    ) {
+        throw "Duplicate research dispatch claimed an unexpected job"
+    }
+    if (
+        $duplicateResearchResponse.program.id -ne
+            $programId -or
+        $duplicateResearchResponse.program.created
+    ) {
+        throw "Duplicate research dispatch did not reuse the program"
+    }
+    if (
+        $duplicateResearchResponse.referral_link.id -ne
+            $referralLinkId -or
+        $duplicateResearchResponse.referral_link.created
+    ) {
+        throw "Duplicate research dispatch did not reuse the referral link"
+    }
+
+    $dedupeStateSql = @"
+select
+  (select count(*)
+   from public.programs
+   where official_url = '$runtimeProgramUrl')
+  || '|' ||
+  (select count(*)
+   from public.referral_links
+   where program_id = '$programId'::uuid
+     and url = 'https://example.local/referral-program');
+"@
+
+    $dedupeState =
+        Invoke-LocalSql -Sql $dedupeStateSql
+    $dedupeStateValue = [string](
+        @($dedupeState) |
+            Select-Object -Last 1
+    )
+
+    if ($dedupeStateValue.Trim() -ne "1|1") {
+        throw "Program or referral link dedupe check failed"
+    }
+
+    Write-Pass "Repeated research reused the program and referral link"
     Write-Pass "Controller eight-stage pipeline passed"
 }
 finally {
     $pipelineCleanupSql = @"
+delete from public.referral_links
+where program_id in (
+  select id
+  from public.programs
+  where official_url = '$runtimeProgramUrl'
+);
+
+delete from public.programs
+where official_url = '$runtimeProgramUrl';
+
 delete from public.content
 where evidence->>'request_id' = '$scoutJobId';
 
@@ -749,7 +913,15 @@ select
   || '|' ||
   (select count(*)
    from public.content
-   where evidence->>'request_id' = '$scoutJobId');
+   where evidence->>'request_id' = '$scoutJobId')
+  || '|' ||
+  (select count(*)
+   from public.programs
+   where official_url = '$runtimeProgramUrl')
+  || '|' ||
+  (select count(*)
+   from public.referral_links
+   where id = '$referralLinkId'::uuid);
 "@
 
     $pipelineCleanup = Invoke-LocalSql -Sql $pipelineCleanupSql
@@ -757,7 +929,7 @@ select
         @($pipelineCleanup) |
             Select-Object -Last 1
     )
-    if ($pipelineCleanupValue.Trim() -ne "0|0") {
+    if ($pipelineCleanupValue.Trim() -ne "0|0|0|0") {
         throw "Eight-stage pipeline cleanup left diagnostic rows behind"
     }
 }
