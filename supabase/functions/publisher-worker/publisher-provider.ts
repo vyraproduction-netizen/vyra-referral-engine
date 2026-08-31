@@ -3,6 +3,10 @@ export type PublishRequest = {
   language: string;
   title: string;
   slug: string;
+  body: string;
+  excerpt: string | null;
+  meta_title: string | null;
+  meta_description: string | null;
 };
 
 export type PublishReceipt = {

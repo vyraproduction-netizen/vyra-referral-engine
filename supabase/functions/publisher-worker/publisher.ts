@@ -12,6 +12,19 @@ export type PublisherJob = VyraJob & {
   payload: PublishJobPayload;
 };
 
+export type PublisherContent = {
+  id: string;
+  title: string;
+  slug: string;
+  language: string;
+  status: string;
+  body: string | null;
+  excerpt: string | null;
+  meta_title: string | null;
+  meta_description: string | null;
+  published_url: string | null;
+};
+
 export type PublishResult = {
   content_id: string;
   slug: string;
@@ -78,13 +91,36 @@ export function assertPublisherJob(
 
 export async function runPublisher(
   job: PublisherJob,
+  content: PublisherContent,
   provider: PublisherProvider,
 ): Promise<PublishResult> {
+  if (content.id !== job.payload.content_id) {
+    throw new Error("Publisher content id mismatch");
+  }
+
+  if (content.slug !== job.payload.slug) {
+    throw new Error("Publisher content slug mismatch");
+  }
+
+  if (content.status !== "approved") {
+    throw new Error(
+      `Publisher requires approved content, received: ${content.status}`,
+    );
+  }
+
+  if (!content.body?.trim()) {
+    throw new Error("Publisher content body is required");
+  }
+
   const receipt = await provider.publish({
-    content_id: job.payload.content_id,
-    language: job.payload.language,
-    title: job.payload.title,
-    slug: job.payload.slug,
+    content_id: content.id,
+    language: content.language,
+    title: content.title,
+    slug: content.slug,
+    body: content.body,
+    excerpt: content.excerpt,
+    meta_title: content.meta_title,
+    meta_description: content.meta_description,
   });
 
   if (!receipt.published_url) {
@@ -94,8 +130,8 @@ export async function runPublisher(
   }
 
   return {
-    content_id: job.payload.content_id,
-    slug: job.payload.slug,
+    content_id: content.id,
+    slug: content.slug,
     published_url: receipt.published_url,
     provider: receipt.provider,
   };

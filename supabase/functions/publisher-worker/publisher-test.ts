@@ -8,6 +8,9 @@ import {
   assertPublisherJob,
   runPublisher,
 } from "./publisher.ts";
+import type {
+  PublisherContent,
+} from "./publisher.ts";
 
 function createJob(): VyraJob {
   return {
@@ -37,6 +40,21 @@ function createJob(): VyraJob {
           "00000000-0000-4000-8000-000000000945:content_publish",
       },
     },
+  };
+}
+
+function createContent(): PublisherContent {
+  return {
+    id: "00000000-0000-4000-8000-000000000945",
+    title: "Diagnostic approved content",
+    slug: "diagnostic-approved-content",
+    language: "ru",
+    status: "approved",
+    body: "Diagnostic approved article body.",
+    excerpt: "Diagnostic excerpt.",
+    meta_title: "Diagnostic approved content",
+    meta_description: "Diagnostic description.",
+    published_url: null,
   };
 }
 
@@ -84,6 +102,7 @@ Deno.test(
 
     const result = await runPublisher(
       job,
+      createContent(),
       createPublisherProvider("mock"),
     );
 
@@ -96,6 +115,32 @@ Deno.test(
         "https://example.local/published/diagnostic-approved-content"
     ) {
       throw new Error("Unexpected published URL");
+    }
+  },
+);
+
+Deno.test(
+  "publisher rejects non-approved content",
+  async () => {
+    const job = createJob();
+    assertPublisherJob(job);
+    let rejected = false;
+
+    try {
+      await runPublisher(
+        job,
+        {
+          ...createContent(),
+          status: "draft",
+        },
+        createPublisherProvider("mock"),
+      );
+    } catch {
+      rejected = true;
+    }
+
+    if (!rejected) {
+      throw new Error("Non-approved content was published");
     }
   },
 );
