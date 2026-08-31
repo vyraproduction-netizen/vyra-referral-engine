@@ -561,6 +561,62 @@ where id = '$qaJobId'::uuid;
 
     Write-Pass "Controller QA dispatch approved the content"
 
+    if (-not $qaResponse.publish_job) {
+        throw "Controller QA dispatch created no Publisher job"
+    }
+
+    $publishJobId =
+        [string]$qaResponse.publish_job.id
+
+    if (-not $publishJobId) {
+        throw "Controller QA dispatch returned no Publisher job id"
+    }
+
+    $expectedPublishDedupeKey =
+        "$($contentResponse.content.id):content_publish"
+
+    if (
+        $qaResponse.publish_job.dedupeKey -ne
+            $expectedPublishDedupeKey
+    ) {
+        throw (
+            "Controller QA dispatch returned an unexpected " +
+            "Publisher dedupe key"
+        )
+    }
+
+    Write-Pass "Controller QA dispatch created a Publisher job"
+
+    $publishStateSql = @"
+select
+  status || '|' ||
+  attempts || '|' ||
+  task_type || '|' ||
+  (payload->>'content_id' = '$($contentResponse.content.id)')
+from public.jobs
+where id = '$publishJobId'::uuid;
+"@
+
+    $publishState =
+        Invoke-LocalSql -Sql $publishStateSql
+
+    $publishStateValue = [string](
+        @($publishState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $publishStateValue.Trim() -ne
+            "queued|0|content_publish|true"
+    ) {
+        throw (
+            "Publisher job did not persist " +
+            "queued|0|content_publish|true"
+        )
+    }
+
+    Write-Pass "Publisher job persisted as queued"
+
     $qaCompletedStateSql = @"
 select
   j.status || '|' ||
@@ -593,7 +649,7 @@ where j.id = '$qaJobId'::uuid;
     }
 
     Write-Pass "QA result persisted as approved with score 1"
-    Write-Pass "Controller six-stage pipeline passed"
+    Write-Pass "Controller seven-stage queue pipeline passed"
 }
 finally {
     $pipelineCleanupSql = @"
@@ -621,9 +677,9 @@ select
             Select-Object -Last 1
     )
     if ($pipelineCleanupValue.Trim() -ne "0|0") {
-        throw "Six-stage pipeline cleanup left diagnostic rows behind"
+        throw "Seven-stage queue cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Six-stage pipeline diagnostic rows cleaned up"
+Write-Pass "Seven-stage queue diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green

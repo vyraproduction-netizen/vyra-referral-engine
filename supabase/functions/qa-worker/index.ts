@@ -1,6 +1,7 @@
 import {
   claimQaJob,
   completeQaJob,
+  createQaPublishJob,
   loadContentForQa,
   retryQaJob,
   saveQaResult,
@@ -70,9 +71,15 @@ Deno.serve(async () => {
       await saveQaResult(result);
     }
 
+    const publishJob = await createQaPublishJob(
+      job,
+      result,
+    );
+
     await completeQaJob(job.id, {
       ...result,
       reused,
+      publish_job_id: publishJob?.id ?? null,
     });
 
     return Response.json({
@@ -81,6 +88,7 @@ Deno.serve(async () => {
       job_id: job.id,
       qa: result,
       reused,
+      publish_job: publishJob,
     });
   } catch (error) {
     if (job?.id) {

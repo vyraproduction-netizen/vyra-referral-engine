@@ -2,8 +2,12 @@ import {
   createSupabaseAdminClient,
   createSupabaseJobStore,
 } from "../_shared/vyra/supabase-job-store.ts";
+import {
+  enqueuePublishJob,
+} from "./publish-job.ts";
 import type {
   QaContent,
+  QaJob,
   QaResult,
 } from "./qa.ts";
 
@@ -68,6 +72,18 @@ export async function saveQaResult(
   }
 
   return data;
+}
+
+export async function createQaPublishJob(
+  job: QaJob,
+  result: QaResult,
+) {
+  const store = createSupabaseJobStore();
+  return await enqueuePublishJob(
+    store,
+    job,
+    result,
+  );
 }
 
 export async function completeQaJob(
