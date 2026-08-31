@@ -107,6 +107,7 @@ try {
         "supabase/functions/content-worker/index.ts",
         "supabase/functions/qa-worker/index.ts",
         "supabase/functions/publisher-worker/index.ts",
+        "supabase/functions/analytics-worker/index.ts",
         "supabase/functions/vyra-controller/index.ts",
         "supabase/functions/vyra-diagnostics/index.ts"
     )
