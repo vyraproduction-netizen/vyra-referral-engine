@@ -3,6 +3,7 @@ import {
   completeResearchJob,
   createResearchContentJob,
   retryResearchJob,
+  saveResearchProgramCandidate,
 } from "./db.ts";
 
 import {
@@ -42,6 +43,12 @@ Deno.serve(async () => {
       researchProvider,
     );
 
+    const program =
+      await saveResearchProgramCandidate(
+        job,
+        researchResult,
+      );
+
     const contentJob = await createResearchContentJob(
       job,
       researchResult,
@@ -49,7 +56,10 @@ Deno.serve(async () => {
 
     const completion = await completeResearchJob(
       job.id,
-      researchResult,
+      {
+        ...researchResult,
+        program,
+      },
     );
 
     return Response.json({
@@ -65,6 +75,7 @@ Deno.serve(async () => {
         answer_present:
           Boolean(researchResult.research.answer),
       },
+      program,
       content_job: contentJob,
       completion,
     });
