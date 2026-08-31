@@ -128,14 +128,16 @@ fetch: withSupabase<ControllerDatabase>(
             typeof body.agent === "string" && body.agent.trim()
               ? body.agent.trim()
               : "topic_scout";
-        if (agent === "research" || agent === "content" || agent === "qa" || agent === "publisher") {
+        if (agent === "research" || agent === "content" || agent === "qa" || agent === "publisher" || agent === "analytics") {
           const workerName = agent === "research"
             ? "research-worker"
             : agent === "content"
             ? "content-worker"
             : agent === "qa"
             ? "qa-worker"
-            : "publisher-worker";
+            : agent === "publisher"
+            ? "publisher-worker"
+            : "analytics-worker";
 
           const supabaseUrl = Deno.env.get("SUPABASE_URL");
 
@@ -173,7 +175,7 @@ fetch: withSupabase<ControllerDatabase>(
 		return Response.json(
 		  {
 			ok: false,
-			error: "Dispatch supports topic_scout, research, content, qa, and publisher only",
+			error: "Dispatch supports topic_scout, research, content, qa, publisher, and analytics only",
 		  },
 		{ status: 400 }
 	  );

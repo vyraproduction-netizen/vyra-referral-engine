@@ -763,4 +763,252 @@ select
 }
 
 Write-Pass "Eight-stage pipeline diagnostic rows cleaned up"
+$analyticsProgramId =
+    "00000000-0000-4000-8000-000000001000"
+$analyticsLinkId =
+    "00000000-0000-4000-8000-000000001001"
+$analyticsJobId =
+    "00000000-0000-4000-8000-000000001002"
+$analyticsRequestId =
+    "00000000-0000-4000-8000-000000001009"
+
+$analyticsSetupSql = @"
+insert into public.programs (
+  id,
+  name,
+  official_url,
+  status,
+  countries,
+  terms_verified
+)
+values (
+  '$analyticsProgramId'::uuid,
+  'Runtime Analytics Program',
+  'https://example.local/runtime-program',
+  'active',
+  '["EU"]'::jsonb,
+  true
+);
+
+insert into public.referral_links (
+  id,
+  program_id,
+  name,
+  url,
+  source,
+  placement,
+  status
+)
+values (
+  '$analyticsLinkId'::uuid,
+  '$analyticsProgramId'::uuid,
+  'Runtime Analytics Link',
+  'https://example.local/ref/runtime',
+  'runtime-test',
+  'diagnostic',
+  'active'
+);
+
+insert into public.analytics_events (
+  id,
+  event_type,
+  referral_link_id,
+  session_id,
+  source,
+  value,
+  created_at
+)
+values
+(
+  '00000000-0000-4000-8000-000000001003'::uuid,
+  'referral_click',
+  '$analyticsLinkId'::uuid,
+  'runtime-analytics-1',
+  'runtime-test',
+  0,
+  '2026-08-31T07:00:00Z'
+),
+(
+  '00000000-0000-4000-8000-000000001004'::uuid,
+  'referral_click',
+  '$analyticsLinkId'::uuid,
+  'runtime-analytics-2',
+  'runtime-test',
+  0,
+  '2026-08-31T08:00:00Z'
+),
+(
+  '00000000-0000-4000-8000-000000001005'::uuid,
+  'conversion',
+  '$analyticsLinkId'::uuid,
+  'runtime-analytics-2',
+  'runtime-test',
+  0,
+  '2026-08-31T09:00:00Z'
+),
+(
+  '00000000-0000-4000-8000-000000001006'::uuid,
+  'commission',
+  '$analyticsLinkId'::uuid,
+  'runtime-analytics-2',
+  'runtime-test',
+  12.34,
+  '2026-08-31T09:01:00Z'
+),
+(
+  '00000000-0000-4000-8000-000000001007'::uuid,
+  'commission',
+  '$analyticsLinkId'::uuid,
+  'runtime-analytics-2',
+  'runtime-test',
+  7.66,
+  '2026-08-31T09:02:00Z'
+);
+
+insert into public.jobs (
+  id,
+  agent,
+  task_type,
+  status,
+  priority,
+  payload,
+  max_attempts
+)
+values (
+  '$analyticsJobId'::uuid,
+  'analytics',
+  'referral_rollup',
+  'queued',
+  -1000,
+  jsonb_build_object(
+    'request_id', '$analyticsRequestId',
+    'scope', 'all',
+    '_meta', jsonb_build_object(
+      'dedupe_key',
+      '$analyticsRequestId:referral_rollup'
+    )
+  ),
+  3
+);
+"@
+
+try {
+    Invoke-LocalSql -Sql $analyticsSetupSql | Out-Null
+
+    $analyticsResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"analytics"}'
+
+    if (-not $analyticsResponse.ok) {
+        throw "Controller Analytics dispatch returned ok=false"
+    }
+    if ($analyticsResponse.action -ne "dispatch") {
+        throw "Controller Analytics returned an unexpected action"
+    }
+    if ($analyticsResponse.agent -ne "analytics") {
+        throw "Controller Analytics returned an unexpected agent"
+    }
+    if (-not $analyticsResponse.claimed) {
+        throw "Controller Analytics claimed no job"
+    }
+    if ($analyticsResponse.job_id -ne $analyticsJobId) {
+        throw "Controller Analytics claimed an unexpected job"
+    }
+
+    $analytics = $analyticsResponse.analytics
+
+    if (
+        $analytics.links_processed -ne 1 -or
+        $analytics.events_processed -ne 5 -or
+        $analytics.clicks -ne 2 -or
+        $analytics.conversions -ne 1 -or
+        [decimal]$analytics.revenue -ne [decimal]20
+    ) {
+        throw "Controller Analytics returned unexpected metrics"
+    }
+
+    Write-Pass "Controller Analytics dispatch calculated metrics"
+
+    $analyticsStateSql = @"
+select
+  j.status || '|' ||
+  j.attempts || '|' ||
+  r.clicks || '|' ||
+  r.conversions || '|' ||
+  r.revenue
+from public.jobs j
+cross join public.referral_links r
+where j.id = '$analyticsJobId'::uuid
+  and r.id = '$analyticsLinkId'::uuid;
+"@
+
+    $analyticsState =
+        Invoke-LocalSql -Sql $analyticsStateSql
+
+    $analyticsStateValue = [string](
+        @($analyticsState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $analyticsStateValue.Trim() -ne
+            "completed|1|2|1|20.00"
+    ) {
+        throw (
+            "Analytics pipeline did not persist " +
+            "completed|1|2|1|20.00"
+        )
+    }
+
+    Write-Pass "Analytics metrics persisted correctly"
+}
+finally {
+    $analyticsCleanupSql = @"
+delete from public.jobs
+where id = '$analyticsJobId'::uuid;
+
+delete from public.analytics_events
+where referral_link_id = '$analyticsLinkId'::uuid;
+
+delete from public.referral_links
+where id = '$analyticsLinkId'::uuid;
+
+delete from public.programs
+where id = '$analyticsProgramId'::uuid;
+
+select
+  (select count(*)
+   from public.jobs
+   where id = '$analyticsJobId'::uuid)
+  || '|' ||
+  (select count(*)
+   from public.analytics_events
+   where referral_link_id = '$analyticsLinkId'::uuid)
+  || '|' ||
+  (select count(*)
+   from public.referral_links
+   where id = '$analyticsLinkId'::uuid)
+  || '|' ||
+  (select count(*)
+   from public.programs
+   where id = '$analyticsProgramId'::uuid);
+"@
+
+    $analyticsCleanup =
+        Invoke-LocalSql -Sql $analyticsCleanupSql
+
+    $analyticsCleanupValue = [string](
+        @($analyticsCleanup) |
+            Select-Object -Last 1
+    )
+
+    if ($analyticsCleanupValue.Trim() -ne "0|0|0|0") {
+        throw "Analytics cleanup left diagnostic rows behind"
+    }
+}
+
+Write-Pass "Analytics diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
