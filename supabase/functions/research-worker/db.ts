@@ -11,6 +11,12 @@ import {
 import {
   prepareProgramInsert,
 } from "./program-persistence.ts";
+import {
+  buildReferralLink,
+} from "./referral-link.ts";
+import type {
+  SavedProgramCandidate,
+} from "./referral-link.ts";
 import type {
   ResearchFinding,
   ResearchJob,
@@ -94,6 +100,68 @@ export async function saveResearchProgramCandidate(
     ...existing,
     created: false,
     dedupe_key: candidate._meta.dedupe_key,
+  };
+}
+
+export async function saveResearchReferralLink(
+  program: SavedProgramCandidate | null,
+) {
+  if (!program) {
+    return null;
+  }
+
+  const row = buildReferralLink(program);
+
+  if (!row) {
+    return null;
+  }
+
+  const client = createSupabaseAdminClient();
+
+  const { data: inserted, error: insertError } =
+    await client
+      .from("referral_links")
+      .upsert(row, {
+        onConflict: "program_id,url",
+        ignoreDuplicates: true,
+      })
+      .select(
+        "id, program_id, name, url, source, placement, status",
+      )
+      .maybeSingle();
+
+  if (insertError) {
+    throw new Error(
+      `Referral link upsert failed: ${insertError.message}`,
+    );
+  }
+
+  if (inserted) {
+    return {
+      ...inserted,
+      created: true,
+    };
+  }
+
+  const { data: existing, error: existingError } =
+    await client
+      .from("referral_links")
+      .select(
+        "id, program_id, name, url, source, placement, status",
+      )
+      .eq("program_id", row.program_id)
+      .eq("url", row.url)
+      .single();
+
+  if (existingError) {
+    throw new Error(
+      `Referral link lookup failed: ${existingError.message}`,
+    );
+  }
+
+  return {
+    ...existing,
+    created: false,
   };
 }
 

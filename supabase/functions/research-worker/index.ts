@@ -4,6 +4,7 @@ import {
   createResearchContentJob,
   retryResearchJob,
   saveResearchProgramCandidate,
+  saveResearchReferralLink,
 } from "./db.ts";
 
 import {
@@ -49,6 +50,9 @@ Deno.serve(async () => {
         researchResult,
       );
 
+    const referralLink =
+      await saveResearchReferralLink(program);
+
     const contentJob = await createResearchContentJob(
       job,
       researchResult,
@@ -59,6 +63,7 @@ Deno.serve(async () => {
       {
         ...researchResult,
         program,
+        referral_link: referralLink,
       },
     );
 
@@ -76,6 +81,7 @@ Deno.serve(async () => {
           Boolean(researchResult.research.answer),
       },
       program,
+      referral_link: referralLink,
       content_job: contentJob,
       completion,
     });
