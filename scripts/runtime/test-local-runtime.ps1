@@ -526,7 +526,74 @@ where id = '$qaJobId'::uuid;
     }
 
     Write-Pass "QA job persisted as queued"
-    Write-Pass "Controller five-stage queue pipeline passed"
+
+    $qaResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"qa"}'
+
+    if (-not $qaResponse.ok) {
+        throw "Controller QA dispatch returned ok=false"
+    }
+    if ($qaResponse.action -ne "dispatch") {
+        throw "Controller QA dispatch returned an unexpected action"
+    }
+    if ($qaResponse.agent -ne "qa") {
+        throw "Controller QA dispatch returned an unexpected agent"
+    }
+    if (-not $qaResponse.claimed) {
+        throw "Controller QA dispatch claimed no job"
+    }
+    if ($qaResponse.job_id -ne $qaJobId) {
+        throw "Controller QA dispatch claimed an unexpected job"
+    }
+    if ($qaResponse.qa.status -ne "approved") {
+        throw "Controller QA dispatch did not approve the content"
+    }
+    if ([decimal]$qaResponse.qa.score -ne [decimal]1) {
+        throw "Controller QA dispatch returned an unexpected score"
+    }
+    if ($qaResponse.reused) {
+        throw "Controller QA dispatch unexpectedly reused a result"
+    }
+
+    Write-Pass "Controller QA dispatch approved the content"
+
+    $qaCompletedStateSql = @"
+select
+  j.status || '|' ||
+  j.attempts || '|' ||
+  c.status || '|' ||
+  (c.qa_score = 1) || '|' ||
+  (j.result->>'content_id' = c.id::text)
+from public.jobs j
+join public.content c
+  on c.id = (j.payload->>'content_id')::uuid
+where j.id = '$qaJobId'::uuid;
+"@
+
+    $qaCompletedState =
+        Invoke-LocalSql -Sql $qaCompletedStateSql
+
+    $qaCompletedStateValue = [string](
+        @($qaCompletedState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $qaCompletedStateValue.Trim() -ne
+            "completed|1|approved|true|true"
+    ) {
+        throw (
+            "QA pipeline did not persist " +
+            "completed|1|approved|true|true"
+        )
+    }
+
+    Write-Pass "QA result persisted as approved with score 1"
+    Write-Pass "Controller six-stage pipeline passed"
 }
 finally {
     $pipelineCleanupSql = @"
@@ -554,9 +621,9 @@ select
             Select-Object -Last 1
     )
     if ($pipelineCleanupValue.Trim() -ne "0|0") {
-        throw "Five-stage queue cleanup left diagnostic rows behind"
+        throw "Six-stage pipeline cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Five-stage queue diagnostic rows cleaned up"
+Write-Pass "Six-stage pipeline diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
