@@ -21,6 +21,10 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/qa-worker/index.ts"
 
+[functions.publisher-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/publisher-worker/index.ts"
 [functions.vyra-controller]
 enabled = true
 verify_jwt = false
