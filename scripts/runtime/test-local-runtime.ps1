@@ -884,7 +884,160 @@ select
     }
 
     Write-Pass "Repeated research reused the program and referral link"
-    Write-Pass "Controller eight-stage pipeline passed"
+
+    $activateExistingLinkSql = @"
+update public.referral_links
+set
+  status = 'active',
+  updated_at = now()
+where id = '$referralLinkId'::uuid;
+"@
+
+    Invoke-LocalSql -Sql $activateExistingLinkSql |
+        Out-Null
+
+    $verifiedReferralUrl =
+        "$runtimeProgramUrl/referral?verified=runtime"
+    $programTermsUrl =
+        "$runtimeProgramUrl/terms"
+
+    $activationBody = @{
+        action = "activate_program"
+        program_id = $programId
+        affiliate_url = $verifiedReferralUrl
+        terms_url = $programTermsUrl
+        commission_type = "percentage"
+        commission_value = 25
+        recurring = $true
+        cookie_duration_days = 30
+        countries = @("us", "GR", "US")
+        verified_by = "local-runtime-auditor"
+        verification_note =
+            "Verified by the permanent local runtime test"
+    } | ConvertTo-Json -Depth 8
+
+    $activationUnauthorizedStatus = $null
+
+    try {
+        $activationUnauthorizedResponse = Invoke-WebRequest `
+            -UseBasicParsing `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -ContentType "application/json" `
+            -Body $activationBody
+
+        $activationUnauthorizedStatus =
+            [int]$activationUnauthorizedResponse.StatusCode
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $activationUnauthorizedStatus =
+                [int]$_.Exception.Response.StatusCode
+        }
+        else {
+            throw
+        }
+    }
+
+    if ($activationUnauthorizedStatus -ne 401) {
+        throw (
+            "Unauthenticated program activation must " +
+            "return HTTP 401"
+        )
+    }
+
+    Write-Pass "Controller rejects unauthenticated program activation"
+
+    $activationResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body $activationBody
+
+    if (-not $activationResponse.ok) {
+        throw "Controller program activation returned ok=false"
+    }
+    if ($activationResponse.action -ne "activate_program") {
+        throw "Controller returned an unexpected activation action"
+    }
+    if (
+        $activationResponse.activation.program_id -ne
+            $programId
+    ) {
+        throw "Controller activated an unexpected program"
+    }
+    if (
+        $activationResponse.activation.program_status -ne
+            "active"
+    ) {
+        throw "Controller did not activate the program"
+    }
+    if (-not $activationResponse.activation.terms_verified) {
+        throw "Controller did not verify the program terms"
+    }
+    if (
+        $activationResponse.activation.referral_link_status -ne
+            "active"
+    ) {
+        throw "Controller did not activate the verified referral link"
+    }
+
+    Write-Pass "Controller authenticated program activation passed"
+
+    $activationStateSql = @"
+select
+  p.status || '|' ||
+  p.terms_verified || '|' ||
+  p.commission_type || '|' ||
+  p.commission_value || '|' ||
+  p.recurring || '|' ||
+  p.cookie_duration_days || '|' ||
+  (p.countries = '["US", "GR"]'::jsonb) || '|' ||
+  (p.affiliate_url = '$verifiedReferralUrl') || '|' ||
+  (p.terms_url = '$programTermsUrl') || '|' ||
+  (
+    p.notes::jsonb->'activation'->>'verified_by' =
+      'local-runtime-auditor'
+  ) || '|' ||
+  (
+    select status
+    from public.referral_links
+    where id = '$referralLinkId'::uuid
+  ) || '|' ||
+  (
+    select count(*)
+    from public.referral_links
+    where program_id = p.id
+      and url = '$verifiedReferralUrl'
+      and status = 'active'
+      and source = 'verified_activation'
+      and placement = 'program_activation'
+  )
+from public.programs p
+where p.id = '$programId'::uuid;
+"@
+
+    $activationState =
+        Invoke-LocalSql -Sql $activationStateSql
+    $activationStateValue = [string](
+        @($activationState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $activationStateValue.Trim() -ne
+            "active|true|percentage|25.00|true|30|" +
+            "true|true|true|true|paused|1"
+    ) {
+        throw (
+            "Program activation state was not persisted " +
+            "correctly: $activationStateValue"
+        )
+    }
+
+    Write-Pass "Program activation state persisted correctly"
+    Write-Pass "Controller nine-stage pipeline passed"
 }
 finally {
     $pipelineCleanupSql = @"
@@ -930,11 +1083,11 @@ select
             Select-Object -Last 1
     )
     if ($pipelineCleanupValue.Trim() -ne "0|0|0|0") {
-        throw "Eight-stage pipeline cleanup left diagnostic rows behind"
+        throw "Nine-stage pipeline cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Eight-stage pipeline diagnostic rows cleaned up"
+Write-Pass "Nine-stage pipeline diagnostic rows cleaned up"
 $analyticsProgramId =
     "00000000-0000-4000-8000-000000001000"
 $analyticsLinkId =
