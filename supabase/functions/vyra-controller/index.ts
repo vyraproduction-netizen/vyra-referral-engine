@@ -1,5 +1,14 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "npm:@supabase/server@1.4.1";
+import {
+  createAdminClient,
+} from "npm:@supabase/server@1.4.1/core";
+import {
+  prepareProgramActivation,
+} from "./program-activation.ts";
+import type {
+  ProgramActivationInput,
+} from "./program-activation.ts";
 
 type ControllerJob = {
   id: string;
@@ -37,6 +46,21 @@ type ControllerDatabase = {
         };
         Returns: unknown;
       };
+      activate_program: {
+        Args: {
+          p_program_id: string;
+          p_affiliate_url: string;
+          p_terms_url: string;
+          p_commission_type: string;
+          p_commission_value: number;
+          p_recurring: boolean;
+          p_cookie_duration_days: number;
+          p_countries: string[];
+          p_verified_by: string;
+          p_verification_note: string | null;
+        };
+        Returns: Record<string, unknown>;
+      };
     };
     Enums: {
       [_ in never]: never;
@@ -56,8 +80,41 @@ const allowedAgents = new Set([
   "analytics",
 ]);
 
+const allowedActions = [
+  "claim",
+  "complete",
+  "retry",
+  "health",
+  "dispatch",
+  "activate_program",
+] as const;
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getSupabaseAdminSecret(): string {
+  const adminSecret =
+    Deno.env.get("SUPABASE_SECRET_KEY") ??
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!adminSecret) {
+    throw new Error(
+      "A Supabase administrative key is required",
+    );
+  }
+
+  return adminSecret;
+}
+
+function getSupabaseUrl(): string {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+
+  if (!supabaseUrl) {
+    throw new Error("SUPABASE_URL is required");
+  }
+
+  return supabaseUrl;
 }
 
 function getControllerAuthConfig() {
@@ -74,11 +131,22 @@ function getControllerAuthConfig() {
     auth: "secret:vyra_controller" as const,
     env: {
       secretKeys: {
+        default: getSupabaseAdminSecret(),
         vyra_controller: localSecret,
       },
     },
   };
 }
+
+const controllerAdmin =
+  createAdminClient<ControllerDatabase>({
+    env: {
+      url: getSupabaseUrl(),
+      secretKeys: {
+        default: getSupabaseAdminSecret(),
+      },
+    },
+  });
 
 export default {
 fetch: withSupabase<ControllerDatabase>(
@@ -104,12 +172,12 @@ fetch: withSupabase<ControllerDatabase>(
             ? body.action.trim().toLowerCase()
             : "claim";
 
-        if (!["claim", "complete", "retry", "health", "dispatch"].includes(action)) {
+        if (!(allowedActions as readonly string[]).includes(action)) {
           return Response.json(
             {
               ok: false,
               error: "Invalid action",
-              allowed_actions: ["claim", "complete", "retry", "health", "dispatch"],
+              allowed_actions: [...allowedActions],
             },
             { status: 400 }
           );
@@ -120,6 +188,64 @@ fetch: withSupabase<ControllerDatabase>(
             ok: true,
             service: "vyra-controller",
             status: "online",
+          });
+        }
+
+        if (action === "activate_program") {
+          let activation;
+
+          try {
+            activation = prepareProgramActivation(
+              body as unknown as ProgramActivationInput,
+            );
+          } catch (error) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: getErrorMessage(error),
+              },
+              { status: 400 },
+            );
+          }
+
+          const { data, error } =
+            await controllerAdmin.rpc(
+              "activate_program",
+              {
+                p_program_id: activation.program_id,
+                p_affiliate_url:
+                  activation.affiliate_url,
+                p_terms_url: activation.terms_url,
+                p_commission_type:
+                  activation.commission_type,
+                p_commission_value:
+                  activation.commission_value,
+                p_recurring: activation.recurring,
+                p_cookie_duration_days:
+                  activation.cookie_duration_days,
+                p_countries: activation.countries,
+                p_verified_by: activation.verified_by,
+                p_verification_note:
+                  activation.verification_note,
+              },
+            );
+
+          if (error) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: error.message,
+              },
+              { status: 400 },
+            );
+          }
+
+          return Response.json({
+            ok: true,
+            action,
+            activation: data,
           });
         }
 
@@ -182,7 +308,7 @@ fetch: withSupabase<ControllerDatabase>(
 	}
 
           const { data, error } =
-            await ctx.supabaseAdmin.rpc("claim_next_job", {
+            await controllerAdmin.rpc("claim_next_job", {
               p_agent: agent,
             });
 
@@ -238,7 +364,7 @@ fetch: withSupabase<ControllerDatabase>(
             }
 
             const { data: completed, error: completeError } =
-              await ctx.supabaseAdmin.rpc("complete_job", {
+              await controllerAdmin.rpc("complete_job", {
                 p_job_id: job.id,
                 p_status: "completed",
                 p_result: scoutData.result ?? scoutData,
@@ -262,7 +388,7 @@ fetch: withSupabase<ControllerDatabase>(
             const message = getErrorMessage(error);
 
             const { data: retried, error: retryError } =
-              await ctx.supabaseAdmin.rpc("retry_job", {
+              await controllerAdmin.rpc("retry_job", {
                 p_job_id: job.id,
                 p_error_message: message,
               });
@@ -299,7 +425,7 @@ fetch: withSupabase<ControllerDatabase>(
           }
 
           const { data, error } =
-            await ctx.supabaseAdmin.rpc("claim_next_job", {
+            await controllerAdmin.rpc("claim_next_job", {
               p_agent: agent,
             });
 
@@ -339,7 +465,7 @@ fetch: withSupabase<ControllerDatabase>(
               : {};
 
           const { data, error } =
-            await ctx.supabaseAdmin.rpc("complete_job", {
+            await controllerAdmin.rpc("complete_job", {
               p_job_id: jobId,
               p_status: "completed",
               p_result: result,
@@ -377,7 +503,7 @@ fetch: withSupabase<ControllerDatabase>(
               : "Unknown job error";
 
           const { data, error } =
-            await ctx.supabaseAdmin.rpc("retry_job", {
+            await controllerAdmin.rpc("retry_job", {
               p_job_id: jobId,
               p_error_message: errorMessage,
             });
@@ -409,5 +535,3 @@ fetch: withSupabase<ControllerDatabase>(
     }
   ),
 };
-
-
