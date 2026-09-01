@@ -1,7 +1,8 @@
-﻿import {
+import {
   claimPublisherJob,
   completePublisherJob,
   loadContentForPublish,
+  loadMonetizationForPublish,
   retryPublisherJob,
   savePublishResult,
 } from "./db.ts";
@@ -60,13 +61,17 @@ Deno.serve(async () => {
       };
       reused = true;
     } else {
+      const monetization =
+        await loadMonetizationForPublish(content);
+
       result = await runPublisher(
         job,
         content,
         provider,
+        monetization,
       );
 
-      await savePublishResult(result);
+      await savePublishResult(result, content);
     }
 
     await completePublisherJob(job.id, {
@@ -105,4 +110,3 @@ Deno.serve(async () => {
     );
   }
 });
-
