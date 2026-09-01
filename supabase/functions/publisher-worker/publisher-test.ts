@@ -1,8 +1,16 @@
 import type {
   VyraJob,
 } from "../_shared/vyra/job-store.ts";
+import type {
+  MonetizationPlacement,
+} from "./monetization.ts";
 import {
   createPublisherProvider,
+} from "./publisher-provider.ts";
+import type {
+  PublisherProvider,
+  PublishRequest,
+  PublishReceipt,
 } from "./publisher-provider.ts";
 import {
   assertPublisherJob,
@@ -56,6 +64,36 @@ function createContent(): PublisherContent {
     meta_description: "Diagnostic description.",
     published_url: null,
   };
+}
+
+function createMonetization(): MonetizationPlacement {
+  return {
+    program_id:
+      "00000000-0000-4000-8000-000000001300",
+    referral_link_id:
+      "00000000-0000-4000-8000-000000001301",
+    referral_url:
+      "https://example.local/referral?campaign=vyra",
+    disclosure:
+      "\u041c\u0430\u0442\u0435\u0440\u0438\u0430\u043b \u0441\u043e\u0434\u0435\u0440\u0436\u0438\u0442 \u043f\u0430\u0440\u0442\u043d\u0451\u0440\u0441\u043a\u0443\u044e \u0441\u0441\u044b\u043b\u043a\u0443.",
+  };
+}
+
+class CapturingPublisherProvider
+  implements PublisherProvider {
+  request: PublishRequest | null = null;
+
+  publish(
+    request: PublishRequest,
+  ): Promise<PublishReceipt> {
+    this.request = request;
+
+    return Promise.resolve({
+      published_url:
+        `https://example.local/published/${request.slug}`,
+      provider: "capture",
+    });
+  }
 }
 
 Deno.test(
@@ -115,6 +153,56 @@ Deno.test(
         "https://example.local/published/diagnostic-approved-content"
     ) {
       throw new Error("Unexpected published URL");
+    }
+
+    if (result.monetization !== null) {
+      throw new Error("Unexpected monetization result");
+    }
+  },
+);
+
+Deno.test(
+  "publisher renders monetization before provider delivery",
+  async () => {
+    const job = createJob();
+    assertPublisherJob(job);
+    const provider = new CapturingPublisherProvider();
+    const monetization = createMonetization();
+
+    const result = await runPublisher(
+      job,
+      createContent(),
+      provider,
+      monetization,
+    );
+
+    if (!provider.request) {
+      throw new Error("Publish request was not captured");
+    }
+
+    if (
+      !provider.request.body.includes(
+        monetization.referral_url,
+      )
+    ) {
+      throw new Error("Referral URL was not published");
+    }
+
+    if (
+      !provider.request.body.includes(
+        `vyra-monetization:${monetization.referral_link_id}`,
+      )
+    ) {
+      throw new Error("Monetization marker is missing");
+    }
+
+    if (
+      result.monetization?.referral_link_id !==
+        monetization.referral_link_id
+    ) {
+      throw new Error(
+        "Monetization result was not preserved",
+      );
     }
   },
 );

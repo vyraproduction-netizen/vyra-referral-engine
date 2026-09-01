@@ -1,4 +1,4 @@
-import {
+﻿import {
   claimPublisherJob,
   completePublisherJob,
   loadContentForPublish,
@@ -56,6 +56,7 @@ Deno.serve(async () => {
         slug: content.slug,
         published_url: content.published_url as string,
         provider: "stored",
+        monetization: null,
       };
       reused = true;
     } else {
@@ -104,3 +105,4 @@ Deno.serve(async () => {
     );
   }
 });
+

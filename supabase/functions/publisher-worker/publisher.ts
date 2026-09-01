@@ -4,6 +4,12 @@ import type {
 import type {
   PublishJobPayload,
 } from "../qa-worker/publish-job.ts";
+import {
+  renderMonetizedBody,
+} from "./monetization.ts";
+import type {
+  MonetizationPlacement,
+} from "./monetization.ts";
 import type {
   PublisherProvider,
 } from "./publisher-provider.ts";
@@ -30,6 +36,7 @@ export type PublishResult = {
   slug: string;
   published_url: string;
   provider: string;
+  monetization: MonetizationPlacement | null;
 };
 
 function isRecord(
@@ -93,6 +100,7 @@ export async function runPublisher(
   job: PublisherJob,
   content: PublisherContent,
   provider: PublisherProvider,
+  monetization: MonetizationPlacement | null = null,
 ): Promise<PublishResult> {
   if (content.id !== job.payload.content_id) {
     throw new Error("Publisher content id mismatch");
@@ -112,12 +120,20 @@ export async function runPublisher(
     throw new Error("Publisher content body is required");
   }
 
+  const publishBody = monetization
+    ? renderMonetizedBody(
+      content.body,
+      monetization,
+      content.language,
+    )
+    : content.body;
+
   const receipt = await provider.publish({
     content_id: content.id,
     language: content.language,
     title: content.title,
     slug: content.slug,
-    body: content.body,
+    body: publishBody,
     excerpt: content.excerpt,
     meta_title: content.meta_title,
     meta_description: content.meta_description,
@@ -134,5 +150,6 @@ export async function runPublisher(
     slug: content.slug,
     published_url: receipt.published_url,
     provider: receipt.provider,
+    monetization,
   };
 }
