@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProjectRoot = "C:\VYRA-GITHUB",
     [string]$SupabaseUrl = "http://127.0.0.1:54321",
     [string]$DatabaseContainer = "supabase_db_vyra-local"
@@ -689,202 +689,6 @@ where id = '$publishJobId'::uuid;
 
     Write-Pass "Publisher job persisted as queued"
 
-    $publisherResponse = Invoke-RestMethod `
-        -Method Post `
-        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
-        -Headers @{ apikey = $controllerSecret } `
-        -ContentType "application/json" `
-        -Body '{"action":"dispatch","agent":"publisher"}'
-
-    if (-not $publisherResponse.ok) {
-        throw "Controller Publisher dispatch returned ok=false"
-    }
-    if ($publisherResponse.action -ne "dispatch") {
-        throw "Controller Publisher dispatch returned an unexpected action"
-    }
-    if ($publisherResponse.agent -ne "publisher") {
-        throw "Controller Publisher dispatch returned an unexpected agent"
-    }
-    if (-not $publisherResponse.claimed) {
-        throw "Controller Publisher dispatch claimed no job"
-    }
-    if ($publisherResponse.job_id -ne $publishJobId) {
-        throw "Controller Publisher dispatch claimed an unexpected job"
-    }
-    if ($publisherResponse.provider -ne "mock") {
-        throw "Controller Publisher dispatch did not use the mock provider"
-    }
-    if (
-        $publisherResponse.publication.content_id -ne
-            $contentResponse.content.id
-    ) {
-        throw "Controller Publisher returned an unexpected content id"
-    }
-
-    $expectedPublishedUrl =
-        "https://example.local/published/$($contentResponse.content.slug)"
-
-    if (
-        $publisherResponse.publication.published_url -ne
-            $expectedPublishedUrl
-    ) {
-        throw "Controller Publisher returned an unexpected URL"
-    }
-    if ($publisherResponse.reused) {
-        throw "Controller Publisher unexpectedly reused a result"
-    }
-
-    Write-Pass "Controller Publisher dispatch published the content"
-
-    $publishedStateSql = @"
-select
-  j.status || '|' ||
-  j.attempts || '|' ||
-  c.status || '|' ||
-  (c.published_url = '$expectedPublishedUrl') || '|' ||
-  (j.result->>'provider' = 'mock') || '|' ||
-  (j.result->>'reused' = 'false')
-from public.jobs j
-join public.content c
-  on c.id = (j.payload->>'content_id')::uuid
-where j.id = '$publishJobId'::uuid;
-"@
-
-    $publishedState =
-        Invoke-LocalSql -Sql $publishedStateSql
-
-    $publishedStateValue = [string](
-        @($publishedState) |
-            Select-Object -Last 1
-    )
-
-    if (
-        $publishedStateValue.Trim() -ne
-            "completed|1|published|true|true|true"
-    ) {
-        throw (
-            "Publisher pipeline did not persist " +
-            "completed|1|published|true|true|true"
-        )
-    }
-
-    Write-Pass "Publisher result persisted as published"
-
-    $qaCompletedStateSql = @"
-select
-  j.status || '|' ||
-  j.attempts || '|' ||
-  c.status || '|' ||
-  (c.qa_score = 1) || '|' ||
-  (j.result->>'content_id' = c.id::text)
-from public.jobs j
-join public.content c
-  on c.id = (j.payload->>'content_id')::uuid
-where j.id = '$qaJobId'::uuid;
-"@
-
-    $qaCompletedState =
-        Invoke-LocalSql -Sql $qaCompletedStateSql
-
-    $qaCompletedStateValue = [string](
-        @($qaCompletedState) |
-            Select-Object -Last 1
-    )
-
-    if (
-        $qaCompletedStateValue.Trim() -ne
-            "completed|1|published|true|true"
-    ) {
-        throw (
-            "QA pipeline did not persist " +
-            "completed|1|published|true|true"
-        )
-    }
-
-    Write-Pass "QA result remained valid after publication"
-
-    $duplicateResearchJobId = [guid]::NewGuid().Guid
-    $duplicateResearchSql = @"
-insert into public.jobs (
-  id,
-  agent,
-  task_type,
-  status,
-  priority,
-  payload,
-  max_attempts
-)
-select
-  '$duplicateResearchJobId'::uuid,
-  agent,
-  task_type,
-  'queued',
-  -1000,
-  payload,
-  max_attempts
-from public.jobs
-where id = '$researchJobId'::uuid;
-"@
-
-    Invoke-LocalSql -Sql $duplicateResearchSql |
-        Out-Null
-
-    $duplicateResearchResponse = Invoke-RestMethod `
-        -Method Post `
-        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
-        -Headers @{ apikey = $controllerSecret } `
-        -ContentType "application/json" `
-        -Body '{"action":"dispatch","agent":"research"}'
-
-    if (-not $duplicateResearchResponse.ok) {
-        throw "Duplicate research dispatch returned ok=false"
-    }
-    if (
-        $duplicateResearchResponse.job_id -ne
-            $duplicateResearchJobId
-    ) {
-        throw "Duplicate research dispatch claimed an unexpected job"
-    }
-    if (
-        $duplicateResearchResponse.program.id -ne
-            $programId -or
-        $duplicateResearchResponse.program.created
-    ) {
-        throw "Duplicate research dispatch did not reuse the program"
-    }
-    if (
-        $duplicateResearchResponse.referral_link.id -ne
-            $referralLinkId -or
-        $duplicateResearchResponse.referral_link.created
-    ) {
-        throw "Duplicate research dispatch did not reuse the referral link"
-    }
-
-    $dedupeStateSql = @"
-select
-  (select count(*)
-   from public.programs
-   where official_url = '$runtimeProgramUrl')
-  || '|' ||
-  (select count(*)
-   from public.referral_links
-   where program_id = '$programId'::uuid
-     and url = 'https://example.local/referral-program');
-"@
-
-    $dedupeState =
-        Invoke-LocalSql -Sql $dedupeStateSql
-    $dedupeStateValue = [string](
-        @($dedupeState) |
-            Select-Object -Last 1
-    )
-
-    if ($dedupeStateValue.Trim() -ne "1|1") {
-        throw "Program or referral link dedupe check failed"
-    }
-
-    Write-Pass "Repeated research reused the program and referral link"
-
     $activateExistingLinkSql = @"
 update public.referral_links
 set
@@ -983,6 +787,13 @@ where id = '$referralLinkId'::uuid;
         throw "Controller did not activate the verified referral link"
     }
 
+    $verifiedReferralLinkId = [string](
+        $activationResponse.activation.referral_link_id
+    )
+    if (-not $verifiedReferralLinkId) {
+        throw "Controller activation returned no referral link id"
+    }
+
     Write-Pass "Controller authenticated program activation passed"
 
     $activationStateSql = @"
@@ -1009,6 +820,7 @@ select
     select count(*)
     from public.referral_links
     where program_id = p.id
+      and id = '$verifiedReferralLinkId'::uuid
       and url = '$verifiedReferralUrl'
       and status = 'active'
       and source = 'verified_activation'
@@ -1037,7 +849,237 @@ where p.id = '$programId'::uuid;
     }
 
     Write-Pass "Program activation state persisted correctly"
-    Write-Pass "Controller nine-stage pipeline passed"
+
+    $publisherResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"publisher"}'
+
+    if (-not $publisherResponse.ok) {
+        throw "Controller Publisher dispatch returned ok=false"
+    }
+    if ($publisherResponse.action -ne "dispatch") {
+        throw "Controller Publisher dispatch returned an unexpected action"
+    }
+    if ($publisherResponse.agent -ne "publisher") {
+        throw "Controller Publisher dispatch returned an unexpected agent"
+    }
+    if (-not $publisherResponse.claimed) {
+        throw "Controller Publisher dispatch claimed no job"
+    }
+    if ($publisherResponse.job_id -ne $publishJobId) {
+        throw "Controller Publisher dispatch claimed an unexpected job"
+    }
+    if ($publisherResponse.provider -ne "mock") {
+        throw "Controller Publisher dispatch did not use the mock provider"
+    }
+    if (
+        $publisherResponse.publication.content_id -ne
+            $contentResponse.content.id
+    ) {
+        throw "Controller Publisher returned an unexpected content id"
+    }
+
+    $expectedPublishedUrl =
+        "https://example.local/published/$($contentResponse.content.slug)"
+
+    if (
+        $publisherResponse.publication.published_url -ne
+            $expectedPublishedUrl
+    ) {
+        throw "Controller Publisher returned an unexpected URL"
+    }
+    if ($publisherResponse.reused) {
+        throw "Controller Publisher unexpectedly reused a result"
+    }
+    if (-not $publisherResponse.publication.monetization) {
+        throw "Controller Publisher returned no monetization placement"
+    }
+    if (
+        $publisherResponse.publication.monetization.program_id -ne
+            $programId
+    ) {
+        throw "Controller Publisher monetized with an unexpected program"
+    }
+    if (
+        $publisherResponse.publication.monetization.referral_link_id -ne
+            $verifiedReferralLinkId
+    ) {
+        throw "Controller Publisher monetized with an unexpected link"
+    }
+
+    Write-Pass "Controller Publisher dispatch published the content"
+    Write-Pass "Controller Publisher selected verified monetization"
+
+    $publishedStateSql = @"
+select
+  j.status || '|' ||
+  j.attempts || '|' ||
+  c.status || '|' ||
+  (c.published_url = '$expectedPublishedUrl') || '|' ||
+  (c.program_id = '$programId'::uuid) || '|' ||
+  (c.referral_link_id = '$verifiedReferralLinkId'::uuid) || '|' ||
+  (c.monetized_at is not null) || '|' ||
+  (position('vyra-monetization:' in c.body) > 0) || '|' ||
+  (position('$verifiedReferralUrl' in c.body) > 0) || '|' ||
+  (
+    position(
+      U&'\041C\0430\0442\0435\0440\0438\0430\043B'
+      in c.body
+    ) > 0
+  ) || '|' ||
+  (j.result->>'provider' = 'mock') || '|' ||
+  (
+    j.result->'monetization'->>'referral_link_id' =
+      '$verifiedReferralLinkId'
+  ) || '|' ||
+  (j.result->>'reused' = 'false')
+from public.jobs j
+join public.content c
+  on c.id = (j.payload->>'content_id')::uuid
+where j.id = '$publishJobId'::uuid;
+"@
+
+    $publishedState =
+        Invoke-LocalSql -Sql $publishedStateSql
+
+    $publishedStateValue = [string](
+        @($publishedState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $publishedStateValue.Trim() -ne
+            "completed|1|published|true|true|true|true|true|" +
+            "true|true|true|true|true"
+    ) {
+        throw (
+            "Publisher pipeline did not persist " +
+            "the verified monetization state: " +
+            $publishedStateValue
+        )
+    }
+
+    Write-Pass "Publisher result persisted as published"
+    Write-Pass "Publisher monetization persisted correctly"
+
+    $qaCompletedStateSql = @"
+select
+  j.status || '|' ||
+  j.attempts || '|' ||
+  c.status || '|' ||
+  (c.qa_score = 1) || '|' ||
+  (j.result->>'content_id' = c.id::text)
+from public.jobs j
+join public.content c
+  on c.id = (j.payload->>'content_id')::uuid
+where j.id = '$qaJobId'::uuid;
+"@
+
+    $qaCompletedState =
+        Invoke-LocalSql -Sql $qaCompletedStateSql
+
+    $qaCompletedStateValue = [string](
+        @($qaCompletedState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $qaCompletedStateValue.Trim() -ne
+            "completed|1|published|true|true"
+    ) {
+        throw (
+            "QA pipeline did not persist " +
+            "completed|1|published|true|true"
+        )
+    }
+
+    Write-Pass "QA result remained valid after publication"
+
+    $duplicateResearchJobId = [guid]::NewGuid().Guid
+    $duplicateResearchSql = @"
+insert into public.jobs (
+  id,
+  agent,
+  task_type,
+  status,
+  priority,
+  payload,
+  max_attempts
+)
+select
+  '$duplicateResearchJobId'::uuid,
+  agent,
+  task_type,
+  'queued',
+  -1000,
+  payload,
+  max_attempts
+from public.jobs
+where id = '$researchJobId'::uuid;
+"@
+
+    Invoke-LocalSql -Sql $duplicateResearchSql |
+        Out-Null
+
+    $duplicateResearchResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"research"}'
+
+    if (-not $duplicateResearchResponse.ok) {
+        throw "Duplicate research dispatch returned ok=false"
+    }
+    if (
+        $duplicateResearchResponse.job_id -ne
+            $duplicateResearchJobId
+    ) {
+        throw "Duplicate research dispatch claimed an unexpected job"
+    }
+    if (
+        $duplicateResearchResponse.program.id -ne
+            $programId -or
+        $duplicateResearchResponse.program.created
+    ) {
+        throw "Duplicate research dispatch did not reuse the program"
+    }
+    if (
+        $duplicateResearchResponse.referral_link.id -ne
+            $verifiedReferralLinkId -or
+        $duplicateResearchResponse.referral_link.created
+    ) {
+        throw "Duplicate research dispatch did not reuse the referral link"
+    }
+
+    $dedupeStateSql = @"
+select
+  (select count(*)
+   from public.programs
+   where official_url = '$runtimeProgramUrl')
+  || '|' ||
+  (select count(*)
+   from public.referral_links
+   where program_id = '$programId'::uuid
+     and url = 'https://example.local/referral-program');
+"@
+
+    $dedupeState =
+        Invoke-LocalSql -Sql $dedupeStateSql
+    $dedupeStateValue = [string](
+        @($dedupeState) |
+            Select-Object -Last 1
+    )
+
+    if ($dedupeStateValue.Trim() -ne "1|1") {
+        throw "Program or referral link dedupe check failed"
+    }
+
+    Write-Pass "Repeated research reused the program and referral link"
+    Write-Pass "Controller nine-stage monetized pipeline passed"
 }
 finally {
     $pipelineCleanupSql = @"
@@ -1083,11 +1125,11 @@ select
             Select-Object -Last 1
     )
     if ($pipelineCleanupValue.Trim() -ne "0|0|0|0") {
-        throw "Nine-stage pipeline cleanup left diagnostic rows behind"
+        throw "Nine-stage monetized pipeline cleanup left diagnostic rows behind"
     }
 }
 
-Write-Pass "Nine-stage pipeline diagnostic rows cleaned up"
+Write-Pass "Nine-stage monetized pipeline diagnostic rows cleaned up"
 $analyticsProgramId =
     "00000000-0000-4000-8000-000000001000"
 $analyticsLinkId =
