@@ -10,6 +10,7 @@ export type AttributableContent = {
 };
 
 export type AttributionInput = {
+  dedupe_key: string;
   event_type: AttributedEventType;
   occurred_at: string;
   session_id?: string | null;
@@ -21,6 +22,7 @@ export type AttributionInput = {
 };
 
 export type AttributedEventInsert = {
+  dedupe_key: string;
   event_type: AttributedEventType;
   content_id: string;
   referral_link_id: string;
@@ -51,6 +53,23 @@ function optionalString(
 ): string | null {
   const normalized = value?.trim() ?? "";
   return normalized || null;
+}
+
+function normalizeDedupeKey(
+  value: string,
+): string {
+  const normalized = requiredString(
+    value,
+    "Attribution dedupe key",
+  );
+
+  if (normalized.length > 200) {
+    throw new Error(
+      "Attribution dedupe key exceeds 200 characters",
+    );
+  }
+
+  return normalized;
 }
 
 function normalizeTimestamp(
@@ -114,6 +133,9 @@ export function prepareAttributedEvent(
   );
 
   return {
+    dedupe_key: normalizeDedupeKey(
+      input.dedupe_key,
+    ),
     event_type: input.event_type,
     content_id: contentId,
     referral_link_id: referralLinkId,

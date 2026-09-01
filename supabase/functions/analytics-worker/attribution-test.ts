@@ -27,6 +27,7 @@ function input(
   value: number | string = 0,
 ): AttributionInput {
   return {
+    dedupe_key: " runtime:event:1 ",
     event_type: eventType,
     occurred_at: "2026-09-01T18:00:00Z",
     session_id: " session-1 ",
@@ -59,6 +60,10 @@ Deno.test(
     );
     assert(event.country === "GR", "Country mismatch");
     assert(event.language === "ru", "Language mismatch");
+    assert(
+      event.dedupe_key === "runtime:event:1",
+      "Dedupe key mismatch",
+    );
     assert(
       event.created_at ===
         "2026-09-01T18:00:00.000Z",
@@ -181,5 +186,47 @@ Deno.test(
     }
 
     assert(rejected, "Invalid timestamp was accepted");
+  },
+);
+
+Deno.test(
+  "rejects an empty attribution dedupe key",
+  () => {
+    let rejected = false;
+
+    try {
+      prepareAttributedEvent(
+        content,
+        {
+          ...input("referral_click"),
+          dedupe_key: "   ",
+        },
+      );
+    } catch {
+      rejected = true;
+    }
+
+    assert(rejected, "Empty dedupe key was accepted");
+  },
+);
+
+Deno.test(
+  "rejects an oversized attribution dedupe key",
+  () => {
+    let rejected = false;
+
+    try {
+      prepareAttributedEvent(
+        content,
+        {
+          ...input("referral_click"),
+          dedupe_key: "x".repeat(201),
+        },
+      );
+    } catch {
+      rejected = true;
+    }
+
+    assert(rejected, "Oversized dedupe key was accepted");
   },
 );
