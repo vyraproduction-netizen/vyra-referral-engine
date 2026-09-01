@@ -1,4 +1,5 @@
 import {
+  renderMonetizedBody,
   resolveContentCandidateUrl,
   selectMonetizationPlacement,
 } from "./monetization.ts";
@@ -18,6 +19,7 @@ function assert(
 }
 
 const content: MonetizationContent = {
+  language: "ru",
   evidence: {
     candidate: {
       url: "https://Example.Local/program/",
@@ -68,6 +70,10 @@ Deno.test(
     assert(
       placement.referral_link_id === link.id,
       "Referral link id mismatch",
+    );
+    assert(
+      placement.disclosure.startsWith("\u041c\u0430\u0442\u0435\u0440\u0438\u0430\u043b"),
+      "Russian disclosure was not preserved",
     );
   },
 );
@@ -144,6 +150,80 @@ Deno.test(
     assert(
       placement.referral_link_id === link.id,
       "Verified activation link was not preferred",
+    );
+  },
+);
+
+Deno.test(
+  "renders a localized disclosed referral block",
+  () => {
+    const placement = selectMonetizationPlacement(
+      content,
+      [program],
+      [link],
+    );
+
+    assert(placement, "Expected a placement");
+    const body = renderMonetizedBody(
+      "Approved article body.",
+      placement,
+      "ru",
+    );
+
+    assert(
+      body.includes("\u041f\u0435\u0440\u0435\u0439\u0442\u0438 \u043d\u0430 \u0441\u0430\u0439\u0442 \u043f\u0430\u0440\u0442\u043d\u0451\u0440\u0430"),
+      "Russian call to action is missing",
+    );
+    assert(
+      body.includes(link.url),
+      "Referral URL is missing",
+    );
+  },
+);
+
+Deno.test(
+  "renders an English disclosure by default",
+  () => {
+    const placement = selectMonetizationPlacement(
+      { ...content, language: "en" },
+      [program],
+      [link],
+    );
+
+    assert(placement, "Expected a placement");
+    assert(
+      placement.disclosure.startsWith(
+        "This material contains",
+      ),
+      "English disclosure is missing",
+    );
+  },
+);
+
+Deno.test(
+  "does not duplicate an existing monetization block",
+  () => {
+    const placement = selectMonetizationPlacement(
+      content,
+      [program],
+      [link],
+    );
+
+    assert(placement, "Expected a placement");
+    const once = renderMonetizedBody(
+      "Approved article body.",
+      placement,
+      "ru",
+    );
+    const twice = renderMonetizedBody(
+      once,
+      placement,
+      "ru",
+    );
+
+    assert(
+      twice === once,
+      "Monetization block was duplicated",
     );
   },
 );

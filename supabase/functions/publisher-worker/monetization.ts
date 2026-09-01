@@ -1,4 +1,5 @@
 export type MonetizationContent = {
+  language?: string;
   evidence: Record<string, unknown>;
 };
 
@@ -57,6 +58,29 @@ function normalizeHttpsUrl(
   } catch {
     return null;
   }
+}
+
+function isRussian(
+  language: string | undefined,
+): boolean {
+  return language?.trim().toLowerCase().startsWith("ru") ??
+    false;
+}
+
+function disclosureForLanguage(
+  language: string | undefined,
+): string {
+  return isRussian(language)
+    ? "\u041c\u0430\u0442\u0435\u0440\u0438\u0430\u043b \u0441\u043e\u0434\u0435\u0440\u0436\u0438\u0442 \u043f\u0430\u0440\u0442\u043d\u0451\u0440\u0441\u043a\u0443\u044e \u0441\u0441\u044b\u043b\u043a\u0443. \u041c\u044b \u043c\u043e\u0436\u0435\u043c \u043f\u043e\u043b\u0443\u0447\u0438\u0442\u044c \u043a\u043e\u043c\u0438\u0441\u0441\u0438\u044e \u0431\u0435\u0437 \u0434\u043e\u043f\u043e\u043b\u043d\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0445 \u0440\u0430\u0441\u0445\u043e\u0434\u043e\u0432 \u0434\u043b\u044f \u0447\u0438\u0442\u0430\u0442\u0435\u043b\u044f."
+    : "This material contains an affiliate link. We may receive a commission at no additional cost to the reader.";
+}
+
+function callToActionForLanguage(
+  language: string | undefined,
+): string {
+  return isRussian(language)
+    ? "\u041f\u0435\u0440\u0435\u0439\u0442\u0438 \u043d\u0430 \u0441\u0430\u0439\u0442 \u043f\u0430\u0440\u0442\u043d\u0451\u0440\u0430"
+    : "Visit the partner website";
 }
 
 export function resolveContentCandidateUrl(
@@ -126,7 +150,39 @@ export function selectMonetizationPlacement(
     program_id: program.id,
     referral_link_id: link.id,
     referral_url: referralUrl,
-    disclosure:
-      "Материал содержит партнёрскую ссылку. Мы можем получить комиссию без дополнительных расходов для читателя.",
+    disclosure: disclosureForLanguage(
+      content.language,
+    ),
   };
+}
+
+export function renderMonetizedBody(
+  body: string,
+  placement: MonetizationPlacement,
+  language?: string,
+): string {
+  const normalizedBody = body.trim();
+
+  if (!normalizedBody) {
+    throw new Error("Monetization body is required");
+  }
+
+  const marker =
+    `<!-- vyra-monetization:${placement.referral_link_id} -->`;
+
+  if (normalizedBody.includes(marker)) {
+    return normalizedBody;
+  }
+
+  const callToAction = callToActionForLanguage(
+    language,
+  );
+
+  return [
+    normalizedBody,
+    "---",
+    marker,
+    `> ${placement.disclosure}`,
+    `[${callToAction}](${placement.referral_url})`,
+  ].join("\n\n");
 }
