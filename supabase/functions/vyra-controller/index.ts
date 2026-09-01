@@ -9,6 +9,15 @@ import {
 import type {
   ProgramActivationInput,
 } from "./program-activation.ts";
+import {
+  prepareControllerAttributionRequest,
+} from "./analytics-attribution.ts";
+import {
+  prepareAttributedEvent,
+} from "../analytics-worker/attribution.ts";
+import type {
+  AttributedEventInsert,
+} from "../analytics-worker/attribution.ts";
 
 type ControllerJob = {
   id: string;
@@ -18,7 +27,35 @@ type ControllerJob = {
 type ControllerDatabase = {
   public: {
     Tables: {
-      [_ in never]: never;
+      content: {
+        Row: {
+          id: string;
+          status: string;
+          referral_link_id: string | null;
+        };
+        Insert: Record<string, unknown>;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
+      analytics_events: {
+        Row: {
+          id: string;
+          dedupe_key: string | null;
+          event_type: string;
+          content_id: string | null;
+          referral_link_id: string | null;
+          session_id: string | null;
+          country: string | null;
+          language: string | null;
+          source: string | null;
+          metadata: Record<string, unknown>;
+          value: number;
+          created_at: string;
+        };
+        Insert: AttributedEventInsert;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -87,7 +124,53 @@ const allowedActions = [
   "health",
   "dispatch",
   "activate_program",
+  "record_analytics_event",
 ] as const;
+
+type StoredAttributedEvent = ControllerDatabase["public"]["Tables"][
+  "analytics_events"
+]["Row"];
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(
+      value as Record<string, unknown>,
+    ).filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) =>
+      left.localeCompare(right)
+    );
+
+    return `{${entries.map(([key, item]) =>
+      `${JSON.stringify(key)}:${stableJson(item)}`
+    ).join(",")}}`;
+  }
+
+  return JSON.stringify(value) ?? "null";
+}
+
+function isSameAttributedEvent(
+  stored: StoredAttributedEvent,
+  prepared: AttributedEventInsert,
+): boolean {
+  return stored.dedupe_key === prepared.dedupe_key &&
+    stored.event_type === prepared.event_type &&
+    stored.content_id === prepared.content_id &&
+    stored.referral_link_id ===
+      prepared.referral_link_id &&
+    stored.session_id === prepared.session_id &&
+    stored.country === prepared.country &&
+    stored.language === prepared.language &&
+    stored.source === prepared.source &&
+    stableJson(stored.metadata) ===
+      stableJson(prepared.metadata) &&
+    Number(stored.value) === prepared.value &&
+    new Date(stored.created_at).toISOString() ===
+      prepared.created_at;
+}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -188,6 +271,162 @@ fetch: withSupabase<ControllerDatabase>(
             ok: true,
             service: "vyra-controller",
             status: "online",
+          });
+        }
+
+        if (action === "record_analytics_event") {
+          let request;
+
+          try {
+            request =
+              prepareControllerAttributionRequest(body);
+          } catch (error) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: getErrorMessage(error),
+              },
+              { status: 400 },
+            );
+          }
+
+          const { data: content, error: contentError } =
+            await controllerAdmin
+              .from("content")
+              .select("id, status, referral_link_id")
+              .eq("id", request.content_id)
+              .maybeSingle();
+
+          if (contentError) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: contentError.message,
+              },
+              { status: 400 },
+            );
+          }
+
+          if (!content) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: "Attribution content was not found",
+              },
+              { status: 404 },
+            );
+          }
+
+          let prepared: AttributedEventInsert;
+
+          try {
+            prepared = prepareAttributedEvent(
+              content,
+              request.attribution,
+            );
+          } catch (error) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: getErrorMessage(error),
+              },
+              { status: 400 },
+            );
+          }
+
+          const eventColumns =
+            "id, dedupe_key, event_type, content_id, referral_link_id, session_id, country, language, source, metadata, value, created_at";
+
+          const {
+            data: existing,
+            error: existingError,
+          } = await controllerAdmin
+            .from("analytics_events")
+            .select(eventColumns)
+            .eq("dedupe_key", prepared.dedupe_key)
+            .maybeSingle();
+
+          if (existingError) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: existingError.message,
+              },
+              { status: 500 },
+            );
+          }
+
+          if (existing) {
+            if (!isSameAttributedEvent(existing, prepared)) {
+              return Response.json(
+                {
+                  ok: false,
+                  action,
+                  error:
+                    "Analytics dedupe key collision",
+                },
+                { status: 409 },
+              );
+            }
+
+            return Response.json({
+              ok: true,
+              action,
+              event: existing,
+              reused: true,
+            });
+          }
+
+          const { data: inserted, error: insertError } =
+            await controllerAdmin
+              .from("analytics_events")
+              .insert(prepared)
+              .select(eventColumns)
+              .single();
+
+          if (insertError) {
+            if (insertError.code === "23505") {
+              const { data: raced, error: racedError } =
+                await controllerAdmin
+                  .from("analytics_events")
+                  .select(eventColumns)
+                  .eq("dedupe_key", prepared.dedupe_key)
+                  .maybeSingle();
+
+              if (
+                !racedError &&
+                raced &&
+                isSameAttributedEvent(raced, prepared)
+              ) {
+                return Response.json({
+                  ok: true,
+                  action,
+                  event: raced,
+                  reused: true,
+                });
+              }
+            }
+
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: insertError.message,
+              },
+              { status: insertError.code === "23505" ? 409 : 400 },
+            );
+          }
+
+          return Response.json({
+            ok: true,
+            action,
+            event: inserted,
+            reused: false,
           });
         }
 
