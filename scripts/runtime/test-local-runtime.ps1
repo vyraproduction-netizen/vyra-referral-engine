@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$ProjectRoot = "C:\VYRA-GITHUB",
     [string]$SupabaseUrl = "http://127.0.0.1:54321",
     [string]$DatabaseContainer = "supabase_db_vyra-local"
@@ -1729,8 +1729,15 @@ $optimizerLinkIdList = ($optimizerLinkIds | ForEach-Object {
 $optimizerContentIdList = ($optimizerContentIds | ForEach-Object {
     "'$_'::uuid"
 }) -join ", "
+$optimizerContentTextList = ($optimizerContentIds | ForEach-Object {
+    "'$_'"
+}) -join ", "
 
 $optimizerCleanupSql = @"
+delete from public.jobs
+where agent = 'repeat'
+  and payload->>'source_content_id' in ($optimizerContentTextList);
+
 delete from public.jobs
 where id = '$optimizerJobId'::uuid;
 
@@ -1920,6 +1927,25 @@ values (
 
     Write-Pass "Optimizer produced all five deterministic actions"
 
+    $optimizerRepeatJobs = @(
+        $optimizerResponse.optimizer.repeat_jobs |
+            Where-Object {
+                $_.dedupeKey -match
+                    [regex]::Escape($optimizerContentIds[1]) -or
+                $_.dedupeKey -match
+                    [regex]::Escape($optimizerContentIds[3])
+            }
+    )
+
+    if ($optimizerRepeatJobs.Count -ne 2) {
+        throw (
+            "Expected two diagnostic Repeat jobs, found: " +
+            $optimizerRepeatJobs.Count
+        )
+    }
+
+    Write-Pass "Optimizer created two isolated Repeat jobs"
+
     $optimizerStateSql = @"
 select
   status || '|' || attempts || '|' ||
@@ -1939,6 +1965,14 @@ select string_agg(
 )
 from public.referral_links
 where id in ($optimizerLinkIdList);
+
+select
+  count(*) || '|' ||
+  string_agg(task_type, ',' order by task_type) || '|' ||
+  bool_and(agent = 'repeat' and status = 'queued')
+from public.jobs
+where agent = 'repeat'
+  and payload->>'source_content_id' in ($optimizerContentTextList);
 "@
 
     $optimizerState = @(
@@ -1946,6 +1980,7 @@ where id in ($optimizerLinkIdList);
     )
     $optimizerJobState = [string]$optimizerState[0]
     $optimizerMetricsState = [string]$optimizerState[1]
+    $optimizerRepeatState = [string]$optimizerState[2]
 
     if (
         $optimizerJobState -notmatch
@@ -1963,6 +1998,162 @@ where id in ($optimizerLinkIdList);
     }
 
     Write-Pass "Optimizer result persisted without changing source metrics"
+
+    if (
+        $optimizerRepeatState.Trim() -ne
+            "2|content_improvement,topic_expansion|true"
+    ) {
+        throw "Optimizer Repeat queue state mismatch: $optimizerRepeatState"
+    }
+
+    Write-Pass "Optimizer persisted two queued Repeat jobs"
+
+    $repeatDispatchBody =
+        '{"action":"dispatch","agent":"repeat"}'
+    $repeatUnauthorizedStatus = $null
+
+    try {
+        $repeatUnauthorizedResponse = Invoke-WebRequest `
+            -UseBasicParsing `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -ContentType "application/json" `
+            -Body $repeatDispatchBody
+
+        $repeatUnauthorizedStatus =
+            [int]$repeatUnauthorizedResponse.StatusCode
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $repeatUnauthorizedStatus =
+                [int]$_.Exception.Response.StatusCode
+        }
+        else {
+            throw
+        }
+    }
+
+    if ($repeatUnauthorizedStatus -ne 401) {
+        throw "Unauthenticated Repeat dispatch must return HTTP 401"
+    }
+
+    Write-Pass "Controller rejects unauthenticated Repeat dispatch"
+
+    $repeatResponses = @()
+    for ($repeatIndex = 0; $repeatIndex -lt 2; $repeatIndex++) {
+        $repeatResponse = Invoke-RestMethod `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -Headers @{ apikey = $controllerSecret } `
+            -ContentType "application/json" `
+            -Body $repeatDispatchBody
+
+        if (
+            -not $repeatResponse.ok -or
+            -not $repeatResponse.claimed -or
+            $repeatResponse.agent -ne "repeat" -or
+            $repeatResponse.repeat.execution_status -ne "planned"
+        ) {
+            throw "Controller did not dispatch a planned Repeat job"
+        }
+
+        $repeatResponses += $repeatResponse
+    }
+
+    $actualRepeatJobIds = @(
+        $repeatResponses | ForEach-Object { $_.job_id }
+    )
+    $expectedRepeatJobIds = @(
+        $optimizerRepeatJobs | ForEach-Object { $_.id }
+    )
+    $actualRepeatJobKey =
+        (@($actualRepeatJobIds | Sort-Object) -join ',')
+    $expectedRepeatJobKey =
+        (@($expectedRepeatJobIds | Sort-Object) -join ',')
+
+    if ($actualRepeatJobKey -ne $expectedRepeatJobKey) {
+        throw "Controller dispatched unexpected Repeat job ids"
+    }
+
+    $repeatTargets = @(
+        $repeatResponses |
+            ForEach-Object {
+                $_.repeat.plan.target.task_type
+            } |
+            Sort-Object
+    )
+
+    if (
+        ($repeatTargets -join ',') -ne
+            "content_revision,topic_expansion"
+    ) {
+        throw "Repeat execution targets were unexpected"
+    }
+
+    Write-Pass "Controller dispatched both Repeat planning branches"
+
+    $repeatResultSql = @"
+select
+  task_type || '|' ||
+  status || '|' ||
+  attempts || '|' ||
+  (result->>'execution_status') || '|' ||
+  (result->'plan'->>'action') || '|' ||
+  (result->'plan'->'target'->>'task_type')
+from public.jobs
+where agent = 'repeat'
+  and payload->>'source_content_id' in ($optimizerContentTextList)
+order by task_type;
+
+select count(*)
+from public.jobs
+where agent in ('content', 'topic_scout')
+  and (
+    payload->>'source_content_id' in ($optimizerContentTextList)
+    or payload->>'content_id' in ($optimizerContentTextList)
+  );
+"@
+
+    $repeatResultState = @(
+        Invoke-LocalSql -Sql $repeatResultSql
+    )
+
+    if ($repeatResultState.Count -ne 3) {
+        throw (
+            "Expected three Repeat persistence rows, found: " +
+            $repeatResultState.Count
+        )
+    }
+
+    $expectedRepeatResults = @(
+        "content_improvement|completed|1|planned|improve_content|content_revision"
+        "topic_expansion|completed|1|planned|scale_content|topic_expansion"
+    )
+    $actualRepeatResults = @(
+        ([string]($repeatResultState[0])).Trim()
+        ([string]($repeatResultState[1])).Trim()
+    )
+
+    if (
+        $actualRepeatResults[0] -ne
+            $expectedRepeatResults[0] -or
+        $actualRepeatResults[1] -ne
+            $expectedRepeatResults[1]
+    ) {
+        throw (
+            "Repeat results were not persisted correctly. " +
+            "Expected: " +
+            ($expectedRepeatResults -join " || ") +
+            "; Actual: " +
+            ($actualRepeatResults -join " || ")
+        )
+    }
+    if ([string]($repeatResultState[2]) -ne "0") {
+        throw "Repeat planning created downstream jobs prematurely"
+    }
+
+    Write-Pass "Repeat jobs completed exactly once"
+    Write-Pass "Repeat plans persisted without downstream side effects"
 }
 finally {
     Invoke-LocalSql -Sql $optimizerCleanupSql | Out-Null
@@ -1971,7 +2162,11 @@ finally {
 $optimizerRemainingSql = @"
 select
   (select count(*) from public.jobs
-   where id = '$optimizerJobId'::uuid)
+   where id = '$optimizerJobId'::uuid
+      or (
+        agent = 'repeat' and
+        payload->>'source_content_id' in ($optimizerContentTextList)
+      ))
   || '|' ||
   (select count(*) from public.content
    where id in ($optimizerContentIdList))
