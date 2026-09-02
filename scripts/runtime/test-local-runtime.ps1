@@ -1252,7 +1252,7 @@ values (
     'scope', 'all',
     '_meta', jsonb_build_object(
       'dedupe_key',
-      '$analyticsRequestId:referral_rollup'
+      '${analyticsRequestId}:referral_rollup'
     )
   ),
   3
@@ -1378,4 +1378,339 @@ select
 }
 
 Write-Pass "Analytics diagnostic rows cleaned up"
+$attributionProgramId =
+    "00000000-0000-4000-8000-000000001900"
+$attributionLinkId =
+    "00000000-0000-4000-8000-000000001901"
+$attributionContentId =
+    "00000000-0000-4000-8000-000000001902"
+$attributionJobId =
+    "00000000-0000-4000-8000-000000001903"
+$attributionRequestId =
+    "00000000-0000-4000-8000-000000001909"
+$attributionDedupePrefix =
+    "runtime:controller-attribution:1900"
+
+$attributionSetupSql = @"
+insert into public.programs (
+  id, name, official_url, status, countries, terms_verified
+)
+values (
+  '$attributionProgramId'::uuid,
+  'Runtime Attributed Analytics Program',
+  'https://example.local/attributed-analytics-program',
+  'active',
+  '["EU"]'::jsonb,
+  true
+);
+
+insert into public.referral_links (
+  id, program_id, name, url, source, placement, status
+)
+values (
+  '$attributionLinkId'::uuid,
+  '$attributionProgramId'::uuid,
+  'Runtime Attributed Analytics Link',
+  'https://example.local/ref/attributed-analytics',
+  'verified_activation',
+  'program_activation',
+  'active'
+);
+
+insert into public.content (
+  id, title, slug, status, evidence, published_url,
+  published_at, program_id, referral_link_id, monetized_at
+)
+values (
+  '$attributionContentId'::uuid,
+  'Runtime Attributed Analytics Content',
+  'runtime-attributed-analytics-content',
+  'published',
+  '{}'::jsonb,
+  'https://example.local/published/runtime-attributed-analytics-content',
+  now(),
+  '$attributionProgramId'::uuid,
+  '$attributionLinkId'::uuid,
+  now()
+);
+
+insert into public.jobs (
+  id, agent, task_type, status, priority, payload, max_attempts
+)
+values (
+  '$attributionJobId'::uuid,
+  'analytics',
+  'referral_rollup',
+  'queued',
+  -3000,
+  jsonb_build_object(
+    'request_id', '$attributionRequestId',
+    'scope', 'all',
+    '_meta', jsonb_build_object(
+      'dedupe_key',
+      '${attributionRequestId}:referral_rollup'
+    )
+  ),
+  3
+);
+"@
+
+try {
+    Invoke-LocalSql -Sql $attributionSetupSql | Out-Null
+
+    $clickRequest = @{
+        action = "record_analytics_event"
+        content_id = $attributionContentId
+        dedupe_key = "$attributionDedupePrefix`:click"
+        event_type = "referral_click"
+        occurred_at = "2026-09-02T07:00:00Z"
+        session_id = "runtime-attribution-session"
+        country = "gr"
+        language = "RU"
+        source = "controller-runtime-test"
+        metadata = @{ placement = "article-cta" }
+        value = 0
+    }
+
+    $clickBody = $clickRequest | ConvertTo-Json -Depth 8
+    $attributionUnauthorizedStatus = $null
+
+    try {
+        $attributionUnauthorizedResponse = Invoke-WebRequest `
+            -UseBasicParsing `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -ContentType "application/json" `
+            -Body $clickBody
+
+        $attributionUnauthorizedStatus =
+            [int]$attributionUnauthorizedResponse.StatusCode
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $attributionUnauthorizedStatus =
+                [int]$_.Exception.Response.StatusCode
+        }
+        else {
+            throw
+        }
+    }
+
+    if ($attributionUnauthorizedStatus -ne 401) {
+        throw (
+            "Unauthenticated analytics attribution must " +
+            "return HTTP 401"
+        )
+    }
+
+    Write-Pass "Controller rejects unauthenticated analytics attribution"
+
+    $controllerHeaders = @{ apikey = $controllerSecret }
+    $clickResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers $controllerHeaders `
+        -ContentType "application/json" `
+        -Body $clickBody
+
+    if (-not $clickResponse.ok -or $clickResponse.reused) {
+        throw "Controller did not create the attributed referral click"
+    }
+
+    $reusedClickResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers $controllerHeaders `
+        -ContentType "application/json" `
+        -Body $clickBody
+
+    if (
+        -not $reusedClickResponse.ok -or
+        -not $reusedClickResponse.reused -or
+        $reusedClickResponse.event.id -ne $clickResponse.event.id
+    ) {
+        throw "Repeated attributed referral click was not reused"
+    }
+
+    Write-Pass "Controller attributed referral click and reused its dedupe key"
+
+    $collisionRequest = @{} + $clickRequest
+    $collisionRequest.event_type = "conversion"
+    $collisionBody = $collisionRequest | ConvertTo-Json -Depth 8
+    $collisionStatus = $null
+
+    try {
+        $collisionResponse = Invoke-WebRequest `
+            -UseBasicParsing `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -Headers $controllerHeaders `
+            -ContentType "application/json" `
+            -Body $collisionBody
+
+        $collisionStatus = [int]$collisionResponse.StatusCode
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $collisionStatus =
+                [int]$_.Exception.Response.StatusCode
+        }
+        else {
+            throw
+        }
+    }
+
+    if ($collisionStatus -ne 409) {
+        throw "Analytics dedupe collision must return HTTP 409"
+    }
+
+    Write-Pass "Controller rejects analytics attribution dedupe collisions"
+
+    $conversionRequest = @{} + $clickRequest
+    $conversionRequest.dedupe_key =
+        "$attributionDedupePrefix`:conversion"
+    $conversionRequest.event_type = "conversion"
+    $conversionRequest.occurred_at =
+        "2026-09-02T07:01:00Z"
+
+    $commissionRequest = @{} + $clickRequest
+    $commissionRequest.dedupe_key =
+        "$attributionDedupePrefix`:commission"
+    $commissionRequest.event_type = "commission"
+    $commissionRequest.occurred_at =
+        "2026-09-02T07:02:00Z"
+    $commissionRequest.value = 18.75
+
+    foreach ($eventRequest in @(
+        $conversionRequest,
+        $commissionRequest
+    )) {
+        $eventResponse = Invoke-RestMethod `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -Headers $controllerHeaders `
+            -ContentType "application/json" `
+            -Body ($eventRequest | ConvertTo-Json -Depth 8)
+
+        if (-not $eventResponse.ok -or $eventResponse.reused) {
+            throw "Controller did not create an attributed analytics event"
+        }
+    }
+
+    $attributionResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers $controllerHeaders `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"analytics"}'
+
+    if (
+        -not $attributionResponse.ok -or
+        -not $attributionResponse.claimed -or
+        $attributionResponse.job_id -ne $attributionJobId
+    ) {
+        throw "Controller did not dispatch attributed analytics"
+    }
+
+    $attributionMetrics = $attributionResponse.analytics
+    if (
+        $attributionMetrics.links_processed -ne 1 -or
+        $attributionMetrics.events_processed -ne 3 -or
+        $attributionMetrics.clicks -ne 1 -or
+        $attributionMetrics.conversions -ne 1 -or
+        [decimal]$attributionMetrics.revenue -ne [decimal]18.75
+    ) {
+        throw "Attributed analytics returned unexpected metrics"
+    }
+
+    Write-Pass "Controller Analytics rolled up attributed events"
+
+    $attributionStateSql = @"
+select
+  j.status || '|' ||
+  j.attempts || '|' ||
+  r.clicks || '|' ||
+  r.conversions || '|' ||
+  r.revenue || '|' ||
+  count(e.id) || '|' ||
+  count(distinct e.dedupe_key) || '|' ||
+  bool_and(e.content_id = '$attributionContentId'::uuid)
+from public.jobs j
+cross join public.referral_links r
+join public.analytics_events e
+  on e.referral_link_id = r.id
+where j.id = '$attributionJobId'::uuid
+  and r.id = '$attributionLinkId'::uuid
+group by j.status, j.attempts, r.clicks,
+  r.conversions, r.revenue;
+"@
+
+    $attributionState =
+        Invoke-LocalSql -Sql $attributionStateSql
+    $attributionStateValue = [string](
+        @($attributionState) |
+            Select-Object -Last 1
+    )
+
+    if (
+        $attributionStateValue.Trim() -ne
+            "completed|1|1|1|18.75|3|3|true"
+    ) {
+        throw (
+            "Attributed analytics state was not persisted: " +
+            $attributionStateValue
+        )
+    }
+
+    Write-Pass "Attributed analytics metrics persisted correctly"
+}
+finally {
+    $attributionCleanupSql = @"
+delete from public.jobs
+where id = '$attributionJobId'::uuid;
+
+delete from public.analytics_events
+where dedupe_key like '${attributionDedupePrefix}:%'
+   or content_id = '$attributionContentId'::uuid;
+
+delete from public.content
+where id = '$attributionContentId'::uuid;
+
+delete from public.referral_links
+where id = '$attributionLinkId'::uuid;
+
+delete from public.programs
+where id = '$attributionProgramId'::uuid;
+
+select
+  (select count(*) from public.jobs
+   where id = '$attributionJobId'::uuid)
+  || '|' ||
+  (select count(*) from public.analytics_events
+   where dedupe_key like '${attributionDedupePrefix}:%'
+      or content_id = '$attributionContentId'::uuid)
+  || '|' ||
+  (select count(*) from public.content
+   where id = '$attributionContentId'::uuid)
+  || '|' ||
+  (select count(*) from public.referral_links
+   where id = '$attributionLinkId'::uuid)
+  || '|' ||
+  (select count(*) from public.programs
+   where id = '$attributionProgramId'::uuid);
+"@
+
+    $attributionCleanup =
+        Invoke-LocalSql -Sql $attributionCleanupSql
+    $attributionCleanupValue = [string](
+        @($attributionCleanup) |
+            Select-Object -Last 1
+    )
+
+    if ($attributionCleanupValue.Trim() -ne "0|0|0|0|0") {
+        throw "Attributed analytics cleanup left diagnostic rows behind"
+    }
+}
+
+Write-Pass "Attributed analytics diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
