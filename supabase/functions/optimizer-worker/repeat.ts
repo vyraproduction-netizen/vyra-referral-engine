@@ -12,7 +12,7 @@ export type RepeatSource = {
 };
 
 export type RepeatJob = {
-  agent: "content" | "topic_scout";
+  agent: "repeat";
   task_type: "content_improvement" | "topic_expansion";
   status: "queued";
   priority: number;
@@ -50,16 +50,10 @@ function requiredString(
 
 function repeatRoute(
   action: RepeatableOptimizationAction,
-): Pick<RepeatJob, "agent" | "task_type"> {
+): RepeatJob["task_type"] {
   return action === "improve_content"
-    ? {
-      agent: "content",
-      task_type: "content_improvement",
-    }
-    : {
-      agent: "topic_scout",
-      task_type: "topic_expansion",
-    };
+    ? "content_improvement"
+    : "topic_expansion";
 }
 
 function metricToken(value: number): string {
@@ -84,7 +78,7 @@ export function buildRepeatJob(
   }
 
   const action = decision.action;
-  const route = repeatRoute(action);
+  const taskType = repeatRoute(action);
 
   const sourceJobId = requiredString(
     source.job_id,
@@ -119,7 +113,8 @@ export function buildRepeatJob(
   ].join(":");
 
   return {
-    ...route,
+    agent: "repeat",
+    task_type: taskType,
     status: "queued",
     priority: decision.priority,
     max_attempts: 3,

@@ -48,7 +48,7 @@ Deno.test(
     );
 
     assert(job, "Expected an improvement job");
-    assert(job.agent === "content", "Unexpected agent");
+    assert(job.agent === "repeat", "Unexpected agent");
     assert(
       job.task_type === "content_improvement",
       "Unexpected task type",
@@ -66,7 +66,7 @@ Deno.test(
     );
 
     assert(job, "Expected a scaling job");
-    assert(job.agent === "topic_scout", "Unexpected agent");
+    assert(job.agent === "repeat", "Unexpected agent");
     assert(
       job.task_type === "topic_expansion",
       "Unexpected task type",
