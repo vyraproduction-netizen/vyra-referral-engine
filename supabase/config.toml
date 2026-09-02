@@ -35,6 +35,10 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/optimizer-worker/index.ts"
 
+[functions.repeat-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/repeat-worker/index.ts"
 [functions.vyra-controller]
 enabled = true
 verify_jwt = false
