@@ -1,6 +1,7 @@
 import {
   claimOptimizerJob,
   completeOptimizerJob,
+  createOptimizerRepeatJobs,
   loadOptimizationSnapshots,
   retryOptimizerJob,
 } from "./db.ts";
@@ -29,10 +30,16 @@ Deno.serve(async () => {
 
     const snapshots = await loadOptimizationSnapshots();
     const decisions = rankOptimizationDecisions(snapshots);
+    const repeatJobs = await createOptimizerRepeatJobs(
+      job.id,
+      job.payload.request_id,
+      decisions,
+    );
     const result = {
       scope: job.payload.scope,
       snapshots_processed: snapshots.length,
       decisions,
+      repeat_jobs: repeatJobs,
       actions: {
         skip: decisions.filter((item) =>
           item.action === "skip"

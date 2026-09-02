@@ -3,8 +3,12 @@ import {
   createSupabaseJobStore,
 } from "../_shared/vyra/supabase-job-store.ts";
 import type {
+  OptimizationDecision,
   OptimizationSnapshot,
 } from "./optimizer.ts";
+import {
+  enqueueRepeatJobs,
+} from "./repeat-persistence.ts";
 
 const pageSize = 1000;
 
@@ -134,6 +138,23 @@ export async function completeOptimizerJob(
 ) {
   const store = createSupabaseJobStore();
   await store.complete(jobId, result);
+}
+
+export async function createOptimizerRepeatJobs(
+  jobId: string,
+  requestId: string,
+  decisions: OptimizationDecision[],
+) {
+  const store = createSupabaseJobStore();
+
+  return await enqueueRepeatJobs(
+    store,
+    {
+      job_id: jobId,
+      request_id: requestId,
+    },
+    decisions,
+  );
 }
 
 export async function retryOptimizerJob(
