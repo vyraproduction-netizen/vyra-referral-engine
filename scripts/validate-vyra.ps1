@@ -476,20 +476,62 @@ try {
             )
 
             Write-Host "Running Deno frozen type-check..." -ForegroundColor DarkCyan
-            $denoArguments = @(
-                "--yes",
-                "deno",
-                "check",
-                "--lock=$lockPath",
-                "--frozen-lockfile"
-            ) + $absoluteTypeScript
+            $denoCheckBatchSize = 20
+            $denoCheckExitCode = 0
 
-            & $npx.Source @denoArguments
-            if ($LASTEXITCODE -eq 0) {
+            for (
+                $offset = 0;
+                $offset -lt $absoluteTypeScript.Count;
+                $offset += $denoCheckBatchSize
+            ) {
+                $lastIndex = [Math]::Min(
+                    $offset + $denoCheckBatchSize - 1,
+                    $absoluteTypeScript.Count - 1
+                )
+                $batch = @(
+                    $absoluteTypeScript[$offset..$lastIndex]
+                )
+                $batchNumber = [Math]::Floor(
+                    $offset / $denoCheckBatchSize
+                ) + 1
+                $batchCount = [Math]::Ceiling(
+                    $absoluteTypeScript.Count /
+                    $denoCheckBatchSize
+                )
+
+                Write-Host (
+                    "Deno check batch {0}/{1} ({2} file(s))" -f
+                    $batchNumber,
+                    $batchCount,
+                    $batch.Count
+                ) -ForegroundColor DarkCyan
+
+                $denoArguments = @(
+                    "--yes",
+                    "deno",
+                    "check",
+                    "--lock=$lockPath",
+                    "--frozen-lockfile"
+                ) + $batch
+
+                & $npx.Source @denoArguments
+                $denoCheckExitCode = $LASTEXITCODE
+
+                if ($denoCheckExitCode -ne 0) {
+                    break
+                }
+            }
+
+            if ($denoCheckExitCode -eq 0) {
                 Add-Result "PASS" "Deno check" "All tracked TypeScript files passed with frozen lockfile"
             }
             else {
-                Add-Result "FAIL" "Deno check" ("Exit code {0}" -f $LASTEXITCODE)
+                Add-Result `
+                    "FAIL" `
+                    "Deno check" `
+                    ("Batch {0} failed with exit code {1}" -f `
+                        $batchNumber, `
+                        $denoCheckExitCode)
             }
         }
     }
