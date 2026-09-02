@@ -29,6 +29,12 @@ entrypoint = "./functions/publisher-worker/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/analytics-worker/index.ts"
+
+[functions.optimizer-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/optimizer-worker/index.ts"
+
 [functions.vyra-controller]
 enabled = true
 verify_jwt = false
