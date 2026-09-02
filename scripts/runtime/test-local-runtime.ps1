@@ -1716,6 +1716,7 @@ Write-Pass "Attributed analytics diagnostic rows cleaned up"
 
 $optimizerProgramId = "00000000-0000-4000-8000-000000002200"
 $optimizerJobId = "00000000-0000-4000-8000-000000002220"
+$repeatReuseJobId = "00000000-0000-4000-8000-000000002221"
 $optimizerRequestId = "00000000-0000-4000-8000-000000002229"
 $optimizerLinkIds = 2201..2205 | ForEach-Object {
     "00000000-0000-4000-8000-{0:D12}" -f $_
@@ -1734,6 +1735,11 @@ $optimizerContentTextList = ($optimizerContentIds | ForEach-Object {
 }) -join ", "
 
 $optimizerCleanupSql = @"
+delete from public.jobs
+where agent = 'content'
+  and task_type = 'content_revision'
+  and payload->>'source_content_id' in ($optimizerContentTextList);
+
 delete from public.jobs
 where agent = 'repeat'
   and payload->>'source_content_id' in ($optimizerContentTextList);
@@ -2092,68 +2098,157 @@ where agent = 'repeat'
 
     Write-Pass "Controller dispatched both Repeat planning branches"
 
+    $improveRepeatResponse = @(
+        $repeatResponses |
+            Where-Object {
+                $_.repeat.plan.action -eq "improve_content"
+            }
+    ) | Select-Object -First 1
+    $scaleRepeatResponse = @(
+        $repeatResponses |
+            Where-Object {
+                $_.repeat.plan.action -eq "scale_content"
+            }
+    ) | Select-Object -First 1
+
+    if (
+        -not $improveRepeatResponse -or
+        $improveRepeatResponse.repeat.downstream.execution -ne
+            "content_revision" -or
+        -not $improveRepeatResponse.repeat.downstream.content_revision.created -or
+        $improveRepeatResponse.repeat.downstream.content_revision.reused
+    ) {
+        throw "Repeat improve-content branch did not create a revision job"
+    }
+
+    if (
+        -not $scaleRepeatResponse -or
+        $scaleRepeatResponse.repeat.downstream.execution -ne
+            "planned_only" -or
+        $null -ne
+            $scaleRepeatResponse.repeat.downstream.content_revision
+    ) {
+        throw "Repeat topic-expansion branch created a downstream job"
+    }
+
+    Write-Pass "Repeat improve-content branch created one revision job"
+    Write-Pass "Repeat topic-expansion branch remained planned-only"
+
+    $repeatReuseSetupSql = @"
+insert into public.jobs (
+  id, agent, task_type, status, priority, payload, max_attempts
+)
+select
+  '$repeatReuseJobId'::uuid,
+  agent,
+  task_type,
+  'queued',
+  -5000,
+  payload,
+  max_attempts
+from public.jobs
+where id = '$($improveRepeatResponse.job_id)'::uuid;
+"@
+
+    Invoke-LocalSql -Sql $repeatReuseSetupSql | Out-Null
+
+    $repeatReuseResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body $repeatDispatchBody
+
+    if (
+        -not $repeatReuseResponse.ok -or
+        -not $repeatReuseResponse.claimed -or
+        $repeatReuseResponse.agent -ne "repeat" -or
+        $repeatReuseResponse.job_id -ne $repeatReuseJobId -or
+        $repeatReuseResponse.repeat.downstream.execution -ne
+            "content_revision" -or
+        $repeatReuseResponse.repeat.downstream.content_revision.created -or
+        -not $repeatReuseResponse.repeat.downstream.content_revision.reused
+    ) {
+        throw "Repeated content revision did not reuse its dedupe key"
+    }
+
+    Write-Pass "Repeated content revision reused its dedupe key"
+
     $repeatResultSql = @"
 select
-  task_type || '|' ||
-  status || '|' ||
-  attempts || '|' ||
-  (result->>'execution_status') || '|' ||
-  (result->'plan'->>'action') || '|' ||
-  (result->'plan'->'target'->>'task_type')
+  count(*) || '|' ||
+  bool_and(status = 'completed') || '|' ||
+  bool_and(attempts = 1) || '|' ||
+  bool_and(result->>'execution_status' = 'planned')
 from public.jobs
 where agent = 'repeat'
-  and payload->>'source_content_id' in ($optimizerContentTextList)
-order by task_type;
+  and payload->>'source_content_id' in ($optimizerContentTextList);
+
+select
+  count(*) || '|' ||
+  bool_and(status = 'queued') || '|' ||
+  bool_and(payload->'safeguards'->>'preserve_source_content' = 'true') || '|' ||
+  bool_and(payload->'safeguards'->>'allow_published_overwrite' = 'false') || '|' ||
+  bool_and(payload->'safeguards'->>'reuse_source_slug' = 'false')
+from public.jobs
+where agent = 'content'
+  and task_type = 'content_revision'
+  and payload->>'source_content_id' = '$($optimizerContentIds[1])';
 
 select count(*)
 from public.jobs
-where agent in ('content', 'topic_scout')
-  and (
-    payload->>'source_content_id' in ($optimizerContentTextList)
-    or payload->>'content_id' in ($optimizerContentTextList)
-  );
+where agent = 'topic_scout'
+  and task_type = 'topic_expansion'
+  and payload->>'source_content_id' in ($optimizerContentTextList);
+
+select
+  status || '|' || slug || '|' || published_url || '|' ||
+  program_id || '|' || referral_link_id
+from public.content
+where id = '$($optimizerContentIds[1])'::uuid;
 "@
 
     $repeatResultState = @(
         Invoke-LocalSql -Sql $repeatResultSql
     )
 
-    if ($repeatResultState.Count -ne 3) {
+    if ($repeatResultState.Count -ne 4) {
         throw (
-            "Expected three Repeat persistence rows, found: " +
+            "Expected four Repeat integration rows, found: " +
             $repeatResultState.Count
         )
     }
 
-    $expectedRepeatResults = @(
-        "content_improvement|completed|1|planned|improve_content|content_revision"
-        "topic_expansion|completed|1|planned|scale_content|topic_expansion"
-    )
-    $actualRepeatResults = @(
-        ([string]($repeatResultState[0])).Trim()
-        ([string]($repeatResultState[1])).Trim()
-    )
+    if (([string]($repeatResultState[0])).Trim() -ne "3|true|true|true") {
+        throw "Repeat jobs were not persisted correctly: $($repeatResultState[0])"
+    }
 
     if (
-        $actualRepeatResults[0] -ne
-            $expectedRepeatResults[0] -or
-        $actualRepeatResults[1] -ne
-            $expectedRepeatResults[1]
+        ([string]($repeatResultState[1])).Trim() -ne
+            "1|true|true|true|true"
     ) {
-        throw (
-            "Repeat results were not persisted correctly. " +
-            "Expected: " +
-            ($expectedRepeatResults -join " || ") +
-            "; Actual: " +
-            ($actualRepeatResults -join " || ")
-        )
-    }
-    if ([string]($repeatResultState[2]) -ne "0") {
-        throw "Repeat planning created downstream jobs prematurely"
+        throw "Content revision safeguards were not persisted correctly"
     }
 
-    Write-Pass "Repeat jobs completed exactly once"
-    Write-Pass "Repeat plans persisted without downstream side effects"
+    if (([string]($repeatResultState[2])).Trim() -ne "0") {
+        throw "Topic expansion created an unexpected downstream job"
+    }
+
+    $expectedImproveContent =
+        "published|runtime-optimizer-improve|" +
+        "https://example.local/published/runtime-optimizer-improve|" +
+        "$optimizerProgramId|$($optimizerLinkIds[1])"
+
+    if (
+        ([string]($repeatResultState[3])).Trim() -ne
+            $expectedImproveContent
+    ) {
+        throw "Published source content changed during revision planning"
+    }
+
+    Write-Pass "Three Repeat jobs completed exactly once"
+    Write-Pass "Content revision safeguards persisted correctly"
+    Write-Pass "Published source content remained unchanged"
 }
 finally {
     Invoke-LocalSql -Sql $optimizerCleanupSql | Out-Null
@@ -2162,9 +2257,12 @@ finally {
 $optimizerRemainingSql = @"
 select
   (select count(*) from public.jobs
-   where id = '$optimizerJobId'::uuid
+   where id in (
+        '$optimizerJobId'::uuid,
+        '$repeatReuseJobId'::uuid
+      )
       or (
-        agent = 'repeat' and
+        agent in ('repeat', 'content', 'topic_scout') and
         payload->>'source_content_id' in ($optimizerContentTextList)
       ))
   || '|' ||
