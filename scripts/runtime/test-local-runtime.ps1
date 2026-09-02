@@ -1713,4 +1713,284 @@ select
 }
 
 Write-Pass "Attributed analytics diagnostic rows cleaned up"
+
+$optimizerProgramId = "00000000-0000-4000-8000-000000002200"
+$optimizerJobId = "00000000-0000-4000-8000-000000002220"
+$optimizerRequestId = "00000000-0000-4000-8000-000000002229"
+$optimizerLinkIds = 2201..2205 | ForEach-Object {
+    "00000000-0000-4000-8000-{0:D12}" -f $_
+}
+$optimizerContentIds = 2211..2215 | ForEach-Object {
+    "00000000-0000-4000-8000-{0:D12}" -f $_
+}
+$optimizerLinkIdList = ($optimizerLinkIds | ForEach-Object {
+    "'$_'::uuid"
+}) -join ", "
+$optimizerContentIdList = ($optimizerContentIds | ForEach-Object {
+    "'$_'::uuid"
+}) -join ", "
+
+$optimizerCleanupSql = @"
+delete from public.jobs
+where id = '$optimizerJobId'::uuid;
+
+delete from public.content
+where id in ($optimizerContentIdList);
+
+delete from public.referral_links
+where id in ($optimizerLinkIdList);
+
+delete from public.programs
+where id = '$optimizerProgramId'::uuid;
+"@
+
+try {
+    Invoke-LocalSql -Sql $optimizerCleanupSql | Out-Null
+
+    $optimizerSetupSql = @"
+insert into public.programs (
+  id, name, official_url, status, countries, terms_verified
+)
+values (
+  '$optimizerProgramId'::uuid,
+  'Runtime Optimizer Program',
+  'https://example.local/optimizer-program',
+  'active',
+  '["EU"]'::jsonb,
+  true
+);
+
+insert into public.referral_links (
+  id, program_id, name, url, source, placement, status,
+  clicks, conversions, revenue
+)
+values
+('$($optimizerLinkIds[0])'::uuid, '$optimizerProgramId'::uuid,
+ 'Optimizer Collect Link', 'https://example.local/ref/optimizer-collect',
+ 'runtime-test', 'diagnostic', 'active', 10, 0, 0),
+('$($optimizerLinkIds[1])'::uuid, '$optimizerProgramId'::uuid,
+ 'Optimizer Improve Link', 'https://example.local/ref/optimizer-improve',
+ 'runtime-test', 'diagnostic', 'active', 20, 0, 0),
+('$($optimizerLinkIds[2])'::uuid, '$optimizerProgramId'::uuid,
+ 'Optimizer Monitor Link', 'https://example.local/ref/optimizer-monitor',
+ 'runtime-test', 'diagnostic', 'active', 100, 4, 25),
+('$($optimizerLinkIds[3])'::uuid, '$optimizerProgramId'::uuid,
+ 'Optimizer Scale Link', 'https://example.local/ref/optimizer-scale',
+ 'runtime-test', 'diagnostic', 'active', 100, 5, 25),
+('$($optimizerLinkIds[4])'::uuid, '$optimizerProgramId'::uuid,
+ 'Optimizer Skip Link', 'https://example.local/ref/optimizer-skip',
+ 'runtime-test', 'diagnostic', 'paused', 100, 5, 25);
+
+insert into public.content (
+  id, title, slug, status, evidence, published_url,
+  published_at, program_id, referral_link_id, monetized_at
+)
+values
+('$($optimizerContentIds[0])'::uuid, 'Runtime Optimizer Collect',
+ 'runtime-optimizer-collect', 'published', '{}'::jsonb,
+ 'https://example.local/published/runtime-optimizer-collect', now(),
+ '$optimizerProgramId'::uuid, '$($optimizerLinkIds[0])'::uuid, now()),
+('$($optimizerContentIds[1])'::uuid, 'Runtime Optimizer Improve',
+ 'runtime-optimizer-improve', 'published', '{}'::jsonb,
+ 'https://example.local/published/runtime-optimizer-improve', now(),
+ '$optimizerProgramId'::uuid, '$($optimizerLinkIds[1])'::uuid, now()),
+('$($optimizerContentIds[2])'::uuid, 'Runtime Optimizer Monitor',
+ 'runtime-optimizer-monitor', 'published', '{}'::jsonb,
+ 'https://example.local/published/runtime-optimizer-monitor', now(),
+ '$optimizerProgramId'::uuid, '$($optimizerLinkIds[2])'::uuid, now()),
+('$($optimizerContentIds[3])'::uuid, 'Runtime Optimizer Scale',
+ 'runtime-optimizer-scale', 'published', '{}'::jsonb,
+ 'https://example.local/published/runtime-optimizer-scale', now(),
+ '$optimizerProgramId'::uuid, '$($optimizerLinkIds[3])'::uuid, now()),
+('$($optimizerContentIds[4])'::uuid, 'Runtime Optimizer Skip',
+ 'runtime-optimizer-skip', 'published', '{}'::jsonb,
+ 'https://example.local/published/runtime-optimizer-skip', now(),
+ '$optimizerProgramId'::uuid, '$($optimizerLinkIds[4])'::uuid, now());
+
+insert into public.jobs (
+  id, agent, task_type, status, priority, payload, max_attempts
+)
+values (
+  '$optimizerJobId'::uuid,
+  'optimizer',
+  'performance_optimization',
+  'queued',
+  -4000,
+  jsonb_build_object(
+    'request_id', '$optimizerRequestId',
+    'scope', 'all',
+    '_meta', jsonb_build_object(
+      'dedupe_key',
+      '${optimizerRequestId}:performance_optimization'
+    )
+  ),
+  3
+);
+"@
+
+    Invoke-LocalSql -Sql $optimizerSetupSql | Out-Null
+    Write-Pass "Optimizer diagnostic metrics and job created"
+
+    $optimizerDispatchBody =
+        '{"action":"dispatch","agent":"optimizer"}'
+    $optimizerUnauthorizedStatus = $null
+
+    try {
+        $optimizerUnauthorizedResponse = Invoke-WebRequest `
+            -UseBasicParsing `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -ContentType "application/json" `
+            -Body $optimizerDispatchBody
+
+        $optimizerUnauthorizedStatus =
+            [int]$optimizerUnauthorizedResponse.StatusCode
+    }
+    catch {
+        if ($_.Exception.Response) {
+            $optimizerUnauthorizedStatus =
+                [int]$_.Exception.Response.StatusCode
+        }
+        else {
+            throw
+        }
+    }
+
+    if ($optimizerUnauthorizedStatus -ne 401) {
+        throw "Unauthenticated Optimizer dispatch must return HTTP 401"
+    }
+
+    Write-Pass "Controller rejects unauthenticated Optimizer dispatch"
+
+    $optimizerResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body $optimizerDispatchBody
+
+    if (
+        -not $optimizerResponse.ok -or
+        -not $optimizerResponse.claimed -or
+        $optimizerResponse.agent -ne "optimizer" -or
+        $optimizerResponse.job_id -ne $optimizerJobId
+    ) {
+        throw "Controller did not dispatch the expected Optimizer job"
+    }
+
+    Write-Pass "Controller dispatched the Optimizer job"
+
+    $optimizerDecisions = @(
+        $optimizerResponse.optimizer.decisions |
+            Where-Object {
+                $optimizerContentIds -contains $_.content_id
+            }
+    )
+
+    if ($optimizerDecisions.Count -ne 5) {
+        throw (
+            "Expected five diagnostic Optimizer decisions, found: " +
+            $optimizerDecisions.Count
+        )
+    }
+
+    $optimizerActualActions = @{}
+    foreach ($optimizerDecision in $optimizerDecisions) {
+        $optimizerActualActions[$optimizerDecision.content_id] =
+            $optimizerDecision.action
+    }
+
+    $optimizerExpectedActions = @(
+        "collect_more_data",
+        "improve_content",
+        "monitor",
+        "scale_content",
+        "skip"
+    )
+
+    for ($optimizerIndex = 0; $optimizerIndex -lt 5; $optimizerIndex++) {
+        $optimizerContentId = $optimizerContentIds[$optimizerIndex]
+        if (
+            $optimizerActualActions[$optimizerContentId] -ne
+                $optimizerExpectedActions[$optimizerIndex]
+        ) {
+            throw "Unexpected Optimizer action for ${optimizerContentId}"
+        }
+    }
+
+    Write-Pass "Optimizer produced all five deterministic actions"
+
+    $optimizerStateSql = @"
+select
+  status || '|' || attempts || '|' ||
+  (result->>'scope') || '|' ||
+  jsonb_array_length(result->'decisions') || '|' ||
+  (
+    select count(*)
+    from jsonb_array_elements(result->'decisions') item
+    where (item->>'content_id')::uuid in ($optimizerContentIdList)
+  )
+from public.jobs
+where id = '$optimizerJobId'::uuid;
+
+select string_agg(
+  clicks || ':' || conversions || ':' || revenue,
+  ',' order by id
+)
+from public.referral_links
+where id in ($optimizerLinkIdList);
+"@
+
+    $optimizerState = @(
+        Invoke-LocalSql -Sql $optimizerStateSql
+    )
+    $optimizerJobState = [string]$optimizerState[0]
+    $optimizerMetricsState = [string]$optimizerState[1]
+
+    if (
+        $optimizerJobState -notmatch
+            '^completed\|1\|all\|[0-9]+\|5$'
+    ) {
+        throw "Optimizer result was not persisted: $optimizerJobState"
+    }
+
+    $optimizerExpectedMetrics =
+        "10:0:0.00,20:0:0.00,100:4:25.00," +
+        "100:5:25.00,100:5:25.00"
+
+    if ($optimizerMetricsState.Trim() -ne $optimizerExpectedMetrics) {
+        throw "Optimizer changed source metrics: $optimizerMetricsState"
+    }
+
+    Write-Pass "Optimizer result persisted without changing source metrics"
+}
+finally {
+    Invoke-LocalSql -Sql $optimizerCleanupSql | Out-Null
+}
+
+$optimizerRemainingSql = @"
+select
+  (select count(*) from public.jobs
+   where id = '$optimizerJobId'::uuid)
+  || '|' ||
+  (select count(*) from public.content
+   where id in ($optimizerContentIdList))
+  || '|' ||
+  (select count(*) from public.referral_links
+   where id in ($optimizerLinkIdList))
+  || '|' ||
+  (select count(*) from public.programs
+   where id = '$optimizerProgramId'::uuid);
+"@
+
+$optimizerRemaining = [string](
+    @(Invoke-LocalSql -Sql $optimizerRemainingSql) |
+        Select-Object -Last 1
+)
+
+if ($optimizerRemaining.Trim() -ne "0|0|0|0") {
+    throw "Optimizer cleanup left diagnostic rows: $optimizerRemaining"
+}
+
+Write-Pass "Optimizer diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
