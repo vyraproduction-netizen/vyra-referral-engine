@@ -1,8 +1,12 @@
 import {
   claimRepeatJob,
   completeRepeatJob,
+  createContentRevisionFromPlan,
   retryRepeatJob,
 } from "./db.ts";
+import {
+  routeRepeatDownstream,
+} from "./downstream.ts";
 import {
   runRepeatJob,
 } from "./repeat-job.ts";
@@ -21,7 +25,15 @@ Deno.serve(async () => {
       });
     }
 
-    const result = runRepeatJob(job);
+    const planned = runRepeatJob(job);
+    const downstream = await routeRepeatDownstream(
+      planned.plan,
+      createContentRevisionFromPlan,
+    );
+    const result = {
+      ...planned,
+      downstream,
+    };
 
     await completeRepeatJob(job.id, result);
 
