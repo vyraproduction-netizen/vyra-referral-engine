@@ -2286,4 +2286,303 @@ if ($optimizerRemaining.Trim() -ne "0|0|0|0") {
 }
 
 Write-Pass "Optimizer diagnostic rows cleaned up"
+
+$contentRevisionProgramId = "00000000-0000-4000-8000-000000006900"
+$contentRevisionLinkId = "00000000-0000-4000-8000-000000006901"
+$contentRevisionSourceId = "00000000-0000-4000-8000-000000006902"
+$contentRevisionJobId = "00000000-0000-4000-8000-000000006903"
+$contentRevisionRequestId = "00000000-0000-4000-8000-000000006904"
+$contentRevisionRepeatId = "00000000-0000-4000-8000-000000006905"
+$contentRevisionResearchId = "00000000-0000-4000-8000-000000006906"
+$contentRevisionDedupe = "runtime:content-revision:6900"
+$contentRevisionSourceSlug = "runtime-content-revision-source-6900"
+$contentRevisionSourceMarker = "ORIGINAL_PROTECTED_BODY_6900"
+
+$contentRevisionCleanupSql = @"
+delete from public.jobs
+where agent = 'qa'
+  and payload->>'source_content_job_id' = '$contentRevisionJobId';
+
+delete from public.content
+where revision_job_id = '$contentRevisionJobId'::uuid;
+
+delete from public.content
+where id = '$contentRevisionSourceId'::uuid;
+
+delete from public.jobs
+where id = '$contentRevisionJobId'::uuid
+   or payload #>> '{_meta,dedupe_key}' = '$contentRevisionDedupe';
+
+delete from public.referral_links
+where id = '$contentRevisionLinkId'::uuid;
+
+delete from public.programs
+where id = '$contentRevisionProgramId'::uuid;
+"@
+
+try {
+    Invoke-LocalSql -Sql $contentRevisionCleanupSql | Out-Null
+
+    $contentRevisionSetupSql = @"
+insert into public.programs (
+  id, name, official_url, status, countries, terms_verified
+)
+values (
+  '$contentRevisionProgramId'::uuid,
+  'Runtime Content Revision Program',
+  'https://example.local/program/content-revision-6900',
+  'active',
+  '["EU"]'::jsonb,
+  true
+);
+
+insert into public.referral_links (
+  id, program_id, name, url, source, placement, status
+)
+values (
+  '$contentRevisionLinkId'::uuid,
+  '$contentRevisionProgramId'::uuid,
+  'Runtime Content Revision Link',
+  'https://example.local/ref/content-revision-6900',
+  'runtime-test',
+  'diagnostic',
+  'active'
+);
+
+insert into public.content (
+  id, title, slug, content_type, language, status, body,
+  excerpt, meta_title, meta_description, evidence,
+  published_url, published_at, program_id, referral_link_id,
+  monetized_at
+)
+values (
+  '$contentRevisionSourceId'::uuid,
+  'Runtime Published Content Revision Source',
+  '$contentRevisionSourceSlug',
+  'article',
+  'ru',
+  'published',
+  repeat('$contentRevisionSourceMarker ', 20),
+  'Runtime published source excerpt for revision diagnostics.',
+  'Runtime published revision source',
+  'Runtime published source used for safe content revision diagnostics.',
+  jsonb_build_object(
+    'source_job_id', '$contentRevisionResearchId',
+    'research', jsonb_build_object(
+      'answer', 'Verified runtime research evidence',
+      'sources', jsonb_build_array(
+        jsonb_build_object(
+          'title', 'Runtime evidence',
+          'url', 'https://example.local/evidence/content-revision-6900'
+        )
+      )
+    )
+  ),
+  'https://example.local/published/$contentRevisionSourceSlug',
+  now(),
+  '$contentRevisionProgramId'::uuid,
+  '$contentRevisionLinkId'::uuid,
+  now()
+);
+
+insert into public.jobs (
+  id, agent, task_type, status, priority, payload, max_attempts
+)
+values (
+  '$contentRevisionJobId'::uuid,
+  'content',
+  'content_revision',
+  'queued',
+  -6900,
+  jsonb_build_object(
+    'request_id', '$contentRevisionRequestId',
+    'source_repeat_job_id', '$contentRevisionRepeatId',
+    'source_content_id', '$contentRevisionSourceId',
+    'referral_link_id', '$contentRevisionLinkId',
+    'revision', jsonb_build_object(
+      'action', 'improve_content',
+      'reason', 'Runtime conversion improvement diagnostic',
+      'priority', 80,
+      'metrics', jsonb_build_object(
+        'clicks', 20,
+        'conversions', 0,
+        'revenue', 0,
+        'conversion_rate', 0
+      )
+    ),
+    'safeguards', jsonb_build_object(
+      'preserve_source_content', true,
+      'allow_published_overwrite', false,
+      'reuse_source_slug', false
+    ),
+    '_meta', jsonb_build_object(
+      'dedupe_key', '$contentRevisionDedupe'
+    )
+  ),
+  3
+);
+"@
+
+    Invoke-LocalSql -Sql $contentRevisionSetupSql | Out-Null
+    Write-Pass "Published source and Content Revision job created"
+
+    $contentRevisionFirst = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/content-worker" `
+        -ContentType "application/json" `
+        -Body "{}"
+
+    if (
+        -not $contentRevisionFirst.ok -or
+        -not $contentRevisionFirst.claimed -or
+        $contentRevisionFirst.job_id -ne $contentRevisionJobId -or
+        -not $contentRevisionFirst.revision.created -or
+        $contentRevisionFirst.revision.revision_number -ne 1 -or
+        $contentRevisionFirst.revision.source_content_id -ne
+            $contentRevisionSourceId -or
+        -not $contentRevisionFirst.qa_job.id
+    ) {
+        throw "Content Worker returned an invalid first revision result"
+    }
+
+    Write-Pass "Content Worker created revision 1 and one QA job"
+
+    $contentRevisionResetSql = @"
+update public.jobs
+set status = 'queued',
+    result = null,
+    error_message = null,
+    next_run_at = now(),
+    completed_at = null
+where id = '$contentRevisionJobId'::uuid;
+"@
+    Invoke-LocalSql -Sql $contentRevisionResetSql | Out-Null
+
+    $contentRevisionSecond = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/content-worker" `
+        -ContentType "application/json" `
+        -Body "{}"
+
+    if (
+        -not $contentRevisionSecond.ok -or
+        -not $contentRevisionSecond.claimed -or
+        $contentRevisionSecond.job_id -ne $contentRevisionJobId -or
+        $contentRevisionSecond.revision.created -or
+        $contentRevisionSecond.revision.revision_number -ne 1 -or
+        $null -ne $contentRevisionSecond.qa_job
+    ) {
+        throw "Repeated Content Revision did not reuse persisted state"
+    }
+
+    Write-Pass "Repeated Content Revision reused revision and QA dedupe keys"
+
+    $contentRevisionStateSql = @"
+select
+  (select count(*) from public.content
+   where revision_job_id = '$contentRevisionJobId'::uuid)::text || '|' ||
+  (select count(*) from public.jobs
+   where agent = 'qa'
+     and payload->>'source_content_job_id' = '$contentRevisionJobId')::text || '|' ||
+  (select status from public.jobs
+   where id = '$contentRevisionJobId'::uuid) || '|' ||
+  (select attempts from public.jobs
+   where id = '$contentRevisionJobId'::uuid)::text || '|' ||
+  (select result->>'created' from public.jobs
+   where id = '$contentRevisionJobId'::uuid);
+
+select status || '|' || slug || '|' ||
+       (body like '%$contentRevisionSourceMarker%')::text || '|' ||
+       published_url
+from public.content
+where id = '$contentRevisionSourceId'::uuid;
+
+select status || '|' || revision_number::text || '|' ||
+       source_content_id::text || '|' || revision_job_id::text || '|' ||
+       program_id::text || '|' || referral_link_id::text
+from public.content
+where revision_job_id = '$contentRevisionJobId'::uuid;
+
+select status || '|' || task_type || '|' ||
+       (payload #>> '{_meta,source_kind}') || '|' ||
+       (payload #>> '{_meta,source_content_id}') || '|' ||
+       (payload #>> '{_meta,revision_number}') || '|' ||
+       (payload->>'source_research_job_id')
+from public.jobs
+where agent = 'qa'
+  and payload->>'source_content_job_id' = '$contentRevisionJobId';
+"@
+
+    $contentRevisionState = @(
+        Invoke-LocalSql -Sql $contentRevisionStateSql
+    )
+
+    if (
+        ([string]$contentRevisionState[0]).Trim() -ne
+            "1|1|completed|2|false"
+    ) {
+        throw "Revision or QA persistence count is invalid: $($contentRevisionState[0])"
+    }
+
+    $expectedContentRevisionSource =
+        "published|${contentRevisionSourceSlug}|true|" +
+        "https://example.local/published/${contentRevisionSourceSlug}"
+    if (
+        ([string]$contentRevisionState[1]).Trim() -ne
+            $expectedContentRevisionSource
+    ) {
+        throw "Published source content changed: $($contentRevisionState[1])"
+    }
+
+    $expectedContentRevision =
+        "draft|1|${contentRevisionSourceId}|${contentRevisionJobId}|" +
+        "${contentRevisionProgramId}|${contentRevisionLinkId}"
+    if (
+        ([string]$contentRevisionState[2]).Trim() -ne
+            $expectedContentRevision
+    ) {
+        throw "Persisted revision lineage is invalid: $($contentRevisionState[2])"
+    }
+
+    $expectedContentRevisionQa =
+        "queued|content_qa|content_revision|" +
+        "${contentRevisionSourceId}|1|${contentRevisionResearchId}"
+    if (
+        ([string]$contentRevisionState[3]).Trim() -ne
+            $expectedContentRevisionQa
+    ) {
+        throw "Persisted revision QA lineage is invalid: $($contentRevisionState[3])"
+    }
+
+    Write-Pass "Published revision source remained unchanged"
+    Write-Pass "Atomic revision and QA lineage persisted correctly"
+}
+finally {
+    Invoke-LocalSql -Sql $contentRevisionCleanupSql | Out-Null
+}
+
+$contentRevisionRemainingSql = @"
+select
+  (select count(*) from public.jobs
+   where id = '$contentRevisionJobId'::uuid
+      or payload->>'source_content_job_id' = '$contentRevisionJobId')::text || '|' ||
+  (select count(*) from public.content
+   where id = '$contentRevisionSourceId'::uuid
+      or revision_job_id = '$contentRevisionJobId'::uuid)::text || '|' ||
+  (select count(*) from public.referral_links
+   where id = '$contentRevisionLinkId'::uuid)::text || '|' ||
+  (select count(*) from public.programs
+   where id = '$contentRevisionProgramId'::uuid)::text;
+"@
+
+$contentRevisionRemaining = [string](
+    @(Invoke-LocalSql -Sql $contentRevisionRemainingSql) |
+        Select-Object -Last 1
+)
+
+if ($contentRevisionRemaining.Trim() -ne "0|0|0|0") {
+    throw "Content Revision cleanup left rows: $contentRevisionRemaining"
+}
+
+Write-Pass "Content Revision Worker diagnostic rows cleaned up"
 Write-Host "RESULT: PASS" -ForegroundColor Green
