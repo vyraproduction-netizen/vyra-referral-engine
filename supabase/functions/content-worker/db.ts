@@ -6,6 +6,17 @@ import type {
   ContentDraft,
   ContentJob,
 } from "./content.ts";
+import type {
+  ContentRevisionDraft,
+  ContentRevisionJob,
+  RevisionSourceContent,
+} from "./revision.ts";
+import {
+  persistContentRevision,
+} from "./revision-persistence.ts";
+import type {
+  SavedContentRevision,
+} from "./revision-rpc.ts";
 import {
   enqueueQaJob,
 } from "./qa-job.ts";
@@ -83,6 +94,57 @@ export async function saveContentDraft(
     status: data.status,
     created: true,
   };
+}
+
+export async function loadContentRevisionSource(
+  sourceContentId: string,
+): Promise<RevisionSourceContent> {
+  const client = createSupabaseAdminClient();
+
+  const { data, error } = await client
+    .from("content")
+    .select(
+      [
+        "id",
+        "title",
+        "slug",
+        "content_type",
+        "language",
+        "status",
+        "body",
+        "excerpt",
+        "meta_title",
+        "meta_description",
+        "evidence",
+        "program_id",
+        "referral_link_id",
+        "published_url",
+      ].join(","),
+    )
+    .eq("id", sourceContentId)
+    .single();
+
+  if (error) {
+    throw new Error(
+      `Revision source lookup failed: ${error.message}`,
+    );
+  }
+
+  return data as unknown as RevisionSourceContent;
+}
+
+export async function saveContentRevision(
+  job: ContentRevisionJob,
+  draft: ContentRevisionDraft,
+): Promise<SavedContentRevision> {
+  const client = createSupabaseAdminClient();
+
+  return await persistContentRevision(
+    (args) =>
+      client.rpc("create_content_revision", args),
+    job,
+    draft,
+  );
 }
 
 export async function createContentQaJob(
