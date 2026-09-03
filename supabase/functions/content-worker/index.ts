@@ -2,8 +2,11 @@ import {
   claimContentJob,
   completeContentJob,
   createContentQaJob,
+  createContentRevisionQaJob,
+  loadContentRevisionSource,
   retryContentJob,
   saveContentDraft,
+  saveContentRevision,
 } from "./db.ts";
 import {
   assertContentJob,
@@ -13,6 +16,12 @@ import {
   createContentProvider,
   resolveContentProviderName,
 } from "./content-provider.ts";
+import {
+  assertContentRevisionJob,
+} from "./revision.ts";
+import {
+  runContentRevision,
+} from "./revision-execution.ts";
 
 const contentProviderName = resolveContentProviderName(
   Deno.env.get("CONTENT_PROVIDER"),
@@ -32,6 +41,52 @@ Deno.serve(async () => {
         ok: true,
         claimed: false,
         message: "No content job available",
+      });
+    }
+
+    if (job.task_type === "content_revision") {
+      assertContentRevisionJob(job);
+
+      const source = await loadContentRevisionSource(
+        job.payload.source_content_id,
+      );
+      const draft = await runContentRevision(
+        job,
+        source,
+        contentProvider,
+      );
+      const revision = await saveContentRevision(
+        job,
+        draft,
+      );
+      const qaJob = await createContentRevisionQaJob(
+        job,
+        draft,
+        revision,
+      );
+
+      const result = {
+        content_id: revision.id,
+        slug: revision.slug,
+        status: revision.status,
+        source_content_id:
+          revision.source_content_id,
+        revision_number: revision.revision_number,
+        revision_job_id: revision.revision_job_id,
+        created: revision.created,
+        provider: contentProviderName,
+        qa_job_id: qaJob?.id ?? null,
+      };
+
+      await completeContentJob(job.id, result);
+
+      return Response.json({
+        ok: true,
+        claimed: true,
+        job_id: job.id,
+        provider: contentProviderName,
+        revision,
+        qa_job: qaJob,
       });
     }
 

@@ -14,6 +14,9 @@ import type {
 import {
   persistContentRevision,
 } from "./revision-persistence.ts";
+import {
+  enqueueRevisionQaJob,
+} from "./revision-qa.ts";
 import type {
   SavedContentRevision,
 } from "./revision-rpc.ts";
@@ -144,6 +147,20 @@ export async function saveContentRevision(
       client.rpc("create_content_revision", args),
     job,
     draft,
+  );
+}
+
+export async function createContentRevisionQaJob(
+  job: ContentRevisionJob,
+  draft: ContentRevisionDraft,
+  saved: SavedContentRevision,
+) {
+  const store = createSupabaseJobStore();
+  return await enqueueRevisionQaJob(
+    store,
+    job,
+    draft,
+    saved,
   );
 }
 
