@@ -7,6 +7,9 @@ import {
 import type {
   RepeatExecutionPlan,
 } from "./plan.ts";
+import type {
+  TopicExpansionEnqueueResult,
+} from "./topic-expansion-persistence.ts";
 
 function assert(
   condition: unknown,
@@ -53,64 +56,96 @@ function plan(
   };
 }
 
+const revisionResult: ContentRevisionEnqueueResult = {
+  created: true,
+  reused: false,
+  dedupe_key:
+    "repeat:improve_content:downstream:plan:content_revision",
+  job: {
+    id: "00000000-0000-4000-8000-000000006204",
+    dedupeKey:
+      "repeat:improve_content:downstream:plan:content_revision",
+  },
+};
+
+const expansionResult: TopicExpansionEnqueueResult = {
+  created: true,
+  reused: false,
+  dedupe_key:
+    "repeat:scale_content:downstream:plan:topic_expansion",
+  job: {
+    id: "00000000-0000-4000-8000-000000006205",
+    dedupeKey:
+      "repeat:scale_content:downstream:plan:topic_expansion",
+  },
+};
+
 Deno.test(
-  "routes improve_content to revision persistence",
+  "routes improve_content only to revision persistence",
   async () => {
-    let calls = 0;
-    const expected: ContentRevisionEnqueueResult = {
-      created: true,
-      reused: false,
-      dedupe_key:
-        "repeat:improve_content:downstream:plan:content_revision",
-      job: {
-        id:
-          "00000000-0000-4000-8000-000000006204",
-        dedupeKey:
-          "repeat:improve_content:downstream:plan:content_revision",
-      },
-    };
+    let revisionCalls = 0;
+    let expansionCalls = 0;
 
     const result = await routeRepeatDownstream(
       plan("improve_content"),
       () => {
-        calls += 1;
-        return Promise.resolve(expected);
+        revisionCalls += 1;
+        return Promise.resolve(revisionResult);
+      },
+      () => {
+        expansionCalls += 1;
+        return Promise.resolve(expansionResult);
       },
     );
 
-    assert(calls === 1, "Revision persistence was not called");
+    assert(revisionCalls === 1, "Revision was not called once");
+    assert(expansionCalls === 0, "Expansion was called");
     assert(
       result.execution === "content_revision",
       "Revision execution mismatch",
     );
     assert(
-      result.content_revision === expected,
+      result.content_revision === revisionResult,
       "Revision result mismatch",
+    );
+    assert(
+      result.topic_expansion === null,
+      "Revision returned an expansion result",
     );
   },
 );
 
 Deno.test(
-  "keeps scale_content as planned only",
+  "routes scale_content only to expansion persistence",
   async () => {
-    let calls = 0;
+    let revisionCalls = 0;
+    let expansionCalls = 0;
 
     const result = await routeRepeatDownstream(
       plan("scale_content"),
       () => {
-        calls += 1;
-        throw new Error("Unexpected persistence call");
+        revisionCalls += 1;
+        return Promise.resolve(revisionResult);
+      },
+      () => {
+        expansionCalls += 1;
+        return Promise.resolve(expansionResult);
       },
     );
 
-    assert(calls === 0, "Scale plan accessed persistence");
+    assert(revisionCalls === 0, "Revision was called");
+    assert(expansionCalls === 1, "Expansion was not called once");
     assert(
-      result.execution === "planned_only",
-      "Scale execution must remain planned only",
+      result.execution === "topic_expansion",
+      "Expansion execution mismatch",
     );
     assert(
       result.content_revision === null,
-      "Scale plan created a revision result",
+      "Expansion returned a revision result",
+    );
+    assert(
+      result.topic_expansion === expansionResult,
+      "Expansion result mismatch",
     );
   },
 );
@@ -129,12 +164,38 @@ Deno.test(
     const result = await routeRepeatDownstream(
       plan("improve_content"),
       () => Promise.resolve(reused),
+      () => Promise.resolve(expansionResult),
     );
 
     assert(
       result.execution === "content_revision" &&
         result.content_revision.reused,
       "Reused revision result was not preserved",
+    );
+  },
+);
+
+Deno.test(
+  "preserves a reused expansion result",
+  async () => {
+    const reused: TopicExpansionEnqueueResult = {
+      created: false,
+      reused: true,
+      dedupe_key:
+        "repeat:scale_content:downstream:plan:topic_expansion",
+      job: null,
+    };
+
+    const result = await routeRepeatDownstream(
+      plan("scale_content"),
+      () => Promise.resolve(revisionResult),
+      () => Promise.resolve(reused),
+    );
+
+    assert(
+      result.execution === "topic_expansion" &&
+        result.topic_expansion.reused,
+      "Reused expansion result was not preserved",
     );
   },
 );

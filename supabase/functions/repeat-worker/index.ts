@@ -2,6 +2,7 @@ import {
   claimRepeatJob,
   completeRepeatJob,
   createContentRevisionFromPlan,
+  createTopicExpansionFromPlan,
   retryRepeatJob,
 } from "./db.ts";
 import {
@@ -29,6 +30,7 @@ Deno.serve(async () => {
     const downstream = await routeRepeatDownstream(
       planned.plan,
       createContentRevisionFromPlan,
+      createTopicExpansionFromPlan,
     );
     const result = {
       ...planned,

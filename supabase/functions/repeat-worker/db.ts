@@ -4,6 +4,9 @@ import {
 import {
   enqueueContentRevisionJob,
 } from "./content-revision-persistence.ts";
+import {
+  enqueueTopicExpansionJob,
+} from "./topic-expansion-persistence.ts";
 import type {
   RepeatExecutionPlan,
 } from "./plan.ts";
@@ -26,6 +29,16 @@ export async function createContentRevisionFromPlan(
 ) {
   const store = createSupabaseJobStore();
   return await enqueueContentRevisionJob(
+    store,
+    plan,
+  );
+}
+
+export async function createTopicExpansionFromPlan(
+  plan: RepeatExecutionPlan,
+) {
+  const store = createSupabaseJobStore();
+  return await enqueueTopicExpansionJob(
     store,
     plan,
   );
