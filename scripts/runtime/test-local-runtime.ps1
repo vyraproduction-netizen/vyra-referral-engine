@@ -1737,6 +1737,10 @@ $optimizerContentTextList = ($optimizerContentIds | ForEach-Object {
 
 $optimizerCleanupSql = @"
 delete from public.jobs
+where agent = 'research'
+  and payload->>'request_id' = '$optimizerRequestId';
+
+delete from public.jobs
 where agent = 'topic_scout'
   and task_type = 'topic_expansion'
   and payload->>'source_content_id' in ($optimizerContentTextList);
@@ -1825,6 +1829,13 @@ values
  'runtime-optimizer-skip', 'published', '{}'::jsonb,
  'https://example.local/published/runtime-optimizer-skip', now(),
  '$optimizerProgramId'::uuid, '$($optimizerLinkIds[4])'::uuid, now());
+
+update public.content
+set evidence = jsonb_build_object(
+  'topic_seed', 'image enhancement',
+  'region', 'EU'
+)
+where id = '$($optimizerContentIds[3])'::uuid;
 
 insert into public.jobs (
   id, agent, task_type, status, priority, payload, max_attempts
@@ -2142,6 +2153,13 @@ where agent = 'repeat'
     Write-Pass "Repeat improve-content branch created one revision job"
     Write-Pass "Repeat topic-expansion branch created one expansion job"
 
+    $topicExpansionJobId =
+        $scaleRepeatResponse.repeat.downstream.topic_expansion.job.id
+
+    if (-not $topicExpansionJobId) {
+        throw "Repeat topic-expansion job id is missing"
+    }
+
     $repeatReuseSetupSql = @"
 insert into public.jobs (
   id, agent, task_type, status, priority, payload, max_attempts
@@ -2310,6 +2328,104 @@ where id = '$($optimizerContentIds[1])'::uuid;
     Write-Pass "Content revision safeguards persisted correctly"
     Write-Pass "Topic expansion safeguards persisted correctly"
     Write-Pass "Published source content remained unchanged"
+
+    $topicScoutDispatchBody =
+        '{"action":"dispatch","agent":"topic_scout"}'
+
+    $topicExpansionResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body $topicScoutDispatchBody
+
+    if (
+        -not $topicExpansionResponse.ok -or
+        -not $topicExpansionResponse.claimed -or
+        $topicExpansionResponse.agent -ne "topic_scout" -or
+        $topicExpansionResponse.job_id -ne $topicExpansionJobId
+    ) {
+        throw "Controller did not dispatch the expected Topic Expansion job"
+    }
+
+    Write-Pass "Controller dispatched the planned Topic Expansion job"
+
+    $topicExpansionResult =
+        $topicExpansionResponse.scout.result.topic_expansion
+    $topicExpansionResearchJobs = @(
+        $topicExpansionResponse.scout.result.inserted_research_jobs
+    )
+    $topicExpansionResearchJobCount =
+        $topicExpansionResearchJobs.Count
+
+    if (
+        -not $topicExpansionResult -or
+        $topicExpansionResult.lineage.source_content_id -ne
+            $optimizerContentIds[3] -or
+        $topicExpansionResult.lineage.referral_link_id -ne
+            $optimizerLinkIds[3] -or
+        $topicExpansionResearchJobCount -lt 1
+    ) {
+        throw "Topic Expansion execution response is invalid"
+    }
+
+    Write-Pass "Topic Scout executed the expansion and created Research jobs"
+
+    $topicExpansionStateSql = @"
+select
+  status || '|' || attempts || '|' ||
+  (result->'topic_expansion'->'lineage'->>'source_content_id')
+from public.jobs
+where id = '$topicExpansionJobId'::uuid;
+
+select
+  count(*) || '|' ||
+  bool_and(status = 'queued')
+from public.jobs
+where payload->>'request_id' = '$optimizerRequestId'
+  and agent = 'research'
+  and task_type = 'topic_research'
+  and id <> '$topicExpansionJobId'::uuid;
+
+select
+  status || '|' || slug || '|' || published_url || '|' ||
+  program_id || '|' || referral_link_id
+from public.content
+where id = '$($optimizerContentIds[3])'::uuid;
+"@
+
+    $topicExpansionState = @(
+        Invoke-LocalSql -Sql $topicExpansionStateSql
+    )
+
+    if (
+        ([string]$topicExpansionState[0]).Trim() -ne
+            "completed|1|$($optimizerContentIds[3])"
+    ) {
+        throw "Topic Expansion job result was not persisted correctly"
+    }
+
+    if (
+        ([string]$topicExpansionState[1]).Trim() -ne
+            "$topicExpansionResearchJobCount|true"
+    ) {
+        throw "Topic Expansion Research jobs were not persisted correctly"
+    }
+
+    $expectedScaleContent =
+        "published|runtime-optimizer-scale|" +
+        "https://example.local/published/runtime-optimizer-scale|" +
+        "$optimizerProgramId|$($optimizerLinkIds[3])"
+
+    if (
+        ([string]$topicExpansionState[2]).Trim() -ne
+            $expectedScaleContent
+    ) {
+        throw "Published Topic Expansion source content was changed"
+    }
+
+    Write-Pass "Topic Expansion persisted its result and Research queue"
+    Write-Pass "Published Topic Expansion source remained unchanged"
 }
 finally {
     Invoke-LocalSql -Sql $optimizerCleanupSql | Out-Null
@@ -2324,8 +2440,12 @@ select
         '$repeatScaleReuseJobId'::uuid
       )
       or (
-        agent in ('repeat', 'content', 'topic_scout') and
+        agent in ('repeat', 'content', 'topic_scout', 'research') and
         payload->>'source_content_id' in ($optimizerContentTextList)
+      )
+      or (
+        agent = 'research' and
+        payload->>'request_id' = '$optimizerRequestId'
       ))
   || '|' ||
   (select count(*) from public.content
