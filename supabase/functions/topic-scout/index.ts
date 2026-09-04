@@ -11,6 +11,8 @@ import { prepareJobInsert } from "./db-writer.ts";
 import { createSupabaseJobChecker } from "./supabase-job-checker.ts";
 import { filterNewResearchJobs } from "./job-dedupe.ts";
 import { insertResearchJobs } from "./job-inserter.ts";
+import { resolveTopicScoutPayload } from "./run-payload.ts";
+import { createTopicExpansionSourceLoader } from "./topic-expansion-source.ts";
 
 const researchProviderType =
   Deno.env.get("RESEARCH_PROVIDER") ?? "mock";
@@ -32,21 +34,10 @@ function createResearchProvider() {
 }
 
 const researchProvider = createResearchProvider();
-type TopicScoutPayload = {
-  request_id: string;
-  language: string;
-  region: string;
-  topic_seed: string;
-  constraints?: {
-    max_topics?: number;
-    min_score?: number;
-  };
-};
-
 type RunRequest = {
   action?: string;
   job_id?: string;
-  payload?: TopicScoutPayload;
+  payload?: unknown;
 };
 
 type TopicCandidate = {
@@ -222,24 +213,6 @@ function buildCandidates(seed: string): TopicCandidate[] {
     .sort((a, b) => b.score - a.score);
 }
 
-function isValidPayload(
-  payload: unknown,
-): payload is TopicScoutPayload {
-  if (!payload || typeof payload !== "object") {
-    return false;
-  }
-
-  const value = payload as Record<string, unknown>;
-
-  return (
-    typeof value.request_id === "string" &&
-    typeof value.language === "string" &&
-    typeof value.region === "string" &&
-    typeof value.topic_seed === "string" &&
-    value.topic_seed.trim().length > 0
-  );
-}
-
 Deno.serve(async (req: Request) => {
   try {
     if (req.method !== "POST") {
@@ -275,23 +248,27 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    if (!isValidPayload(body.payload)) {
+    let resolvedPayload;
+
+    try {
+      resolvedPayload = await resolveTopicScoutPayload(
+        body.payload,
+        async (contentId) =>
+          await createTopicExpansionSourceLoader()(contentId),
+      );
+    } catch (error) {
       return Response.json(
         {
           ok: false,
-          error: "Invalid payload",
-          required: [
-            "request_id",
-            "language",
-            "region",
-            "topic_seed",
-          ],
+          error: error instanceof Error
+            ? error.message
+            : String(error),
         },
         { status: 400 },
       );
     }
 
-    const payload = body.payload;
+    const payload = resolvedPayload.payload;
 	const researchResults = await researchProvider.search({
   query: payload.topic_seed,
   language: payload.language,
@@ -372,6 +349,9 @@ const insertedResearchJobs = await insertResearchJobs(
       request_id: payload.request_id,
 result: {
   request_id: payload.request_id,
+  ...(resolvedPayload.expansion
+    ? { topic_expansion: resolvedPayload.expansion }
+    : {}),
   topics,
   research: scoredResearch,
   opportunities,
