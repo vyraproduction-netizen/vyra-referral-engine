@@ -13,6 +13,9 @@ import { filterNewResearchJobs } from "./job-dedupe.ts";
 import { insertResearchJobs } from "./job-inserter.ts";
 import { resolveTopicScoutPayload } from "./run-payload.ts";
 import { createTopicExpansionSourceLoader } from "./topic-expansion-source.ts";
+import {
+  attachTopicExpansionLineageToJobs,
+} from "./expanded-topic-research.ts";
 
 const researchProviderType =
   Deno.env.get("RESEARCH_PROVIDER") ?? "mock";
@@ -293,7 +296,7 @@ const scoutOpportunities = buildScoutOpportunities(
   payload.topic_seed,
 );
 
-const researchJobs = scoutOpportunities
+const baseResearchJobs = scoutOpportunities
   .map((opportunity) =>
     buildResearchJob(
       opportunity,
@@ -302,6 +305,11 @@ const researchJobs = scoutOpportunities
       payload.region,
     )
   );
+
+const researchJobs = attachTopicExpansionLineageToJobs(
+  baseResearchJobs,
+  resolvedPayload.expansion,
+);
 
 const preparedResearchJobs = prepareResearchJobs(
   researchJobs,
