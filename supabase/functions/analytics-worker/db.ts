@@ -3,9 +3,18 @@ import {
   createSupabaseJobStore,
 } from "../_shared/vyra/supabase-job-store.ts";
 import type {
-  AnalyticsEvent,
   ReferralMetrics,
 } from "./analytics.ts";
+import type {
+  ContentAnalyticsEvent,
+  ContentReferralMetrics,
+} from "./content-referral-metrics.ts";
+import {
+  buildContentReferralMetricSync,
+} from "./content-referral-persistence.ts";
+import type {
+  StoredContentReferralMetricKey,
+} from "./content-referral-persistence.ts";
 
 const pageSize = 1000;
 
@@ -45,16 +54,16 @@ export async function loadReferralLinkIds(): Promise<
 }
 
 export async function loadAnalyticsEvents(): Promise<
-  AnalyticsEvent[]
+  ContentAnalyticsEvent[]
 > {
   const client = createSupabaseAdminClient();
-  const events: AnalyticsEvent[] = [];
+  const events: ContentAnalyticsEvent[] = [];
 
   for (let from = 0;; from += pageSize) {
     const { data, error } = await client
       .from("analytics_events")
       .select(
-        "id, event_type, referral_link_id, value, created_at",
+        "id, event_type, content_id, referral_link_id, value, created_at",
       )
       .not("referral_link_id", "is", null)
       .order("id", { ascending: true })
@@ -66,7 +75,7 @@ export async function loadAnalyticsEvents(): Promise<
       );
     }
 
-    const rows = (data ?? []) as AnalyticsEvent[];
+    const rows = (data ?? []) as ContentAnalyticsEvent[];
     events.push(...rows);
 
     if (rows.length < pageSize) {
@@ -75,6 +84,78 @@ export async function loadAnalyticsEvents(): Promise<
   }
 
   return events;
+}
+
+async function loadStoredContentReferralMetricKeys(): Promise<
+  StoredContentReferralMetricKey[]
+> {
+  const client = createSupabaseAdminClient();
+  const rows: StoredContentReferralMetricKey[] = [];
+
+  for (let from = 0;; from += pageSize) {
+    const { data, error } = await client
+      .from("content_referral_metrics")
+      .select("content_id, referral_link_id")
+      .order("content_id", { ascending: true })
+      .order("referral_link_id", { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    if (error) {
+      throw new Error(
+        `Content referral metric keys fetch failed: ${error.message}`,
+      );
+    }
+
+    const page = (data ?? []) as StoredContentReferralMetricKey[];
+    rows.push(...page);
+
+    if (page.length < pageSize) {
+      break;
+    }
+  }
+
+  return rows;
+}
+
+export async function saveContentReferralMetrics(
+  metrics: ContentReferralMetrics[],
+): Promise<void> {
+  const client = createSupabaseAdminClient();
+  const existingRows = await loadStoredContentReferralMetricKeys();
+  const sync = buildContentReferralMetricSync(
+    existingRows,
+    metrics,
+    new Date().toISOString(),
+  );
+
+  for (let from = 0; from < sync.upserts.length; from += pageSize) {
+    const page = sync.upserts.slice(from, from + pageSize);
+    const { error } = await client
+      .from("content_referral_metrics")
+      .upsert(page, {
+        onConflict: "content_id,referral_link_id",
+      });
+
+    if (error) {
+      throw new Error(
+        `Content referral metrics upsert failed: ${error.message}`,
+      );
+    }
+  }
+
+  for (const item of sync.deletes) {
+    const { error } = await client
+      .from("content_referral_metrics")
+      .delete()
+      .eq("content_id", item.content_id)
+      .eq("referral_link_id", item.referral_link_id);
+
+    if (error) {
+      throw new Error(
+        `Content referral metric delete failed: ${error.message}`,
+      );
+    }
+  }
 }
 
 export async function saveReferralMetrics(
