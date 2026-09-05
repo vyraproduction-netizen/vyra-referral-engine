@@ -6,21 +6,16 @@ import {
   retryPublisherJob,
   savePublishResult,
 } from "./db.ts";
+import { createPublisherProvider } from "./publisher-provider.ts";
+import { assertPublisherJob, runPublisher } from "./publisher.ts";
+import type { PublishResult } from "./publisher.ts";
 import {
-  createPublisherProvider,
-} from "./publisher-provider.ts";
-import {
-  assertPublisherJob,
-  runPublisher,
-} from "./publisher.ts";
-import type {
-  PublishResult,
-} from "./publisher.ts";
+  resolvePublisherExpandedTopicLineage,
+} from "./publisher-expanded-topic-lineage.ts";
 
 Deno.serve(async () => {
   let job = null;
-  const providerName =
-    Deno.env.get("PUBLISH_PROVIDER");
+  const providerName = Deno.env.get("PUBLISH_PROVIDER");
 
   try {
     const provider = createPublisherProvider(
@@ -44,25 +39,26 @@ Deno.serve(async () => {
       job.payload.content_id,
     );
 
-    const alreadyPublished =
-      content.status === "published" &&
+    const alreadyPublished = content.status === "published" &&
       Boolean(content.published_url);
 
     let result: PublishResult;
     let reused = false;
 
     if (alreadyPublished) {
+      const topicExpansion = resolvePublisherExpandedTopicLineage(job);
+
       result = {
         content_id: content.id,
         slug: content.slug,
         published_url: content.published_url as string,
         provider: "stored",
         monetization: null,
+        ...(topicExpansion ? { topic_expansion: topicExpansion } : {}),
       };
       reused = true;
     } else {
-      const monetization =
-        await loadMonetizationForPublish(content);
+      const monetization = await loadMonetizationForPublish(content);
 
       result = await runPublisher(
         job,
@@ -91,9 +87,7 @@ Deno.serve(async () => {
     if (job?.id) {
       await retryPublisherJob(
         job.id,
-        error instanceof Error
-          ? error.message
-          : String(error),
+        error instanceof Error ? error.message : String(error),
       );
     }
 
@@ -101,10 +95,7 @@ Deno.serve(async () => {
       {
         ok: false,
         provider: providerName ?? null,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        error: error instanceof Error ? error.message : String(error),
       },
       { status: 500 },
     );

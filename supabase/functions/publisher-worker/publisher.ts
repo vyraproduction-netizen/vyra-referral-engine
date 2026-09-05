@@ -1,18 +1,14 @@
-import type {
-  VyraJob,
-} from "../_shared/vyra/job-store.ts";
-import type {
-  PublishJobPayload,
-} from "../qa-worker/publish-job.ts";
+import type { VyraJob } from "../_shared/vyra/job-store.ts";
+import type { PublishJobPayload } from "../qa-worker/publish-job.ts";
+import { renderMonetizedBody } from "./monetization.ts";
+import type { MonetizationPlacement } from "./monetization.ts";
+import type { PublisherProvider } from "./publisher-provider.ts";
 import {
-  renderMonetizedBody,
-} from "./monetization.ts";
+  resolvePublisherExpandedTopicLineage,
+} from "./publisher-expanded-topic-lineage.ts";
 import type {
-  MonetizationPlacement,
-} from "./monetization.ts";
-import type {
-  PublisherProvider,
-} from "./publisher-provider.ts";
+  ResearchExpandedTopicLineage,
+} from "../research-worker/research-expanded-topic-lineage.ts";
 
 export type PublisherJob = VyraJob & {
   payload: PublishJobPayload;
@@ -37,6 +33,7 @@ export type PublishResult = {
   published_url: string;
   provider: string;
   monetization: MonetizationPlacement | null;
+  topic_expansion?: ResearchExpandedTopicLineage;
 };
 
 function isRecord(
@@ -102,6 +99,8 @@ export async function runPublisher(
   provider: PublisherProvider,
   monetization: MonetizationPlacement | null = null,
 ): Promise<PublishResult> {
+  const topicExpansion = resolvePublisherExpandedTopicLineage(job);
+
   if (content.id !== job.payload.content_id) {
     throw new Error("Publisher content id mismatch");
   }
@@ -151,5 +150,6 @@ export async function runPublisher(
     published_url: receipt.published_url,
     provider: receipt.provider,
     monetization,
+    ...(topicExpansion ? { topic_expansion: topicExpansion } : {}),
   };
 }
