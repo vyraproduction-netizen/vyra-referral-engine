@@ -7,14 +7,14 @@ import type {
   OptimizationSnapshot,
 } from "./optimizer.ts";
 import {
-  rollupContentReferralEvents,
-} from "../analytics-worker/content-referral-metrics.ts";
-import type {
-  ContentAnalyticsEvent,
-} from "../analytics-worker/content-referral-metrics.ts";
-import {
   buildContentOptimizationSnapshots,
 } from "./content-snapshots.ts";
+import {
+  contentReferralMetricsFromStoredRows,
+} from "./stored-content-metrics.ts";
+import type {
+  StoredContentReferralMetricRow,
+} from "./stored-content-metrics.ts";
 import {
   enqueueRepeatJobs,
 } from "./repeat-persistence.ts";
@@ -98,54 +98,48 @@ async function loadReferralMetricRows(): Promise<
   return rows;
 }
 
-async function loadContentAnalyticsEvents(): Promise<
-  ContentAnalyticsEvent[]
+async function loadStoredContentReferralMetrics(): Promise<
+  StoredContentReferralMetricRow[]
 > {
   const client = createSupabaseAdminClient();
-  const events: ContentAnalyticsEvent[] = [];
+  const rows: StoredContentReferralMetricRow[] = [];
 
   for (let from = 0;; from += pageSize) {
     const { data, error } = await client
-      .from("analytics_events")
+      .from("content_referral_metrics")
       .select(
-        "id, event_type, content_id, referral_link_id, value, created_at",
+        "content_id, referral_link_id, clicks, conversions, revenue, last_click_at, last_conversion_at",
       )
-      .not("content_id", "is", null)
-      .not("referral_link_id", "is", null)
-      .in("event_type", [
-        "referral_click",
-        "conversion",
-        "commission",
-      ])
-      .order("id", { ascending: true })
+      .order("content_id", { ascending: true })
+      .order("referral_link_id", { ascending: true })
       .range(from, from + pageSize - 1);
 
     if (error) {
       throw new Error(
-        `Optimizer analytics event fetch failed: ${error.message}`,
+        `Optimizer content metrics fetch failed: ${error.message}`,
       );
     }
 
-    const page = (data ?? []) as ContentAnalyticsEvent[];
-    events.push(...page);
+    const page = (data ?? []) as StoredContentReferralMetricRow[];
+    rows.push(...page);
 
     if (page.length < pageSize) {
       break;
     }
   }
 
-  return events;
+  return rows;
 }
 
 export async function loadOptimizationSnapshots(): Promise<
   OptimizationSnapshot[]
 > {
-  const [contentRows, referralRows, analyticsEvents] = await Promise.all([
+  const [contentRows, referralRows, storedMetrics] = await Promise.all([
     loadContentMetricRows(),
     loadReferralMetricRows(),
-    loadContentAnalyticsEvents(),
+    loadStoredContentReferralMetrics(),
   ]);
-  const metrics = rollupContentReferralEvents(analyticsEvents);
+  const metrics = contentReferralMetricsFromStoredRows(storedMetrics);
 
   return buildContentOptimizationSnapshots(
     contentRows,
