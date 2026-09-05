@@ -1718,6 +1718,7 @@ $optimizerProgramId = "00000000-0000-4000-8000-000000002200"
 $optimizerJobId = "00000000-0000-4000-8000-000000002220"
 $repeatReuseJobId = "00000000-0000-4000-8000-000000002221"
 $repeatScaleReuseJobId = "00000000-0000-4000-8000-000000002222"
+$expandedReusePublishJobId = "00000000-0000-4000-8000-000000002230"
 $optimizerRequestId = "00000000-0000-4000-8000-000000002229"
 $optimizerLinkIds = 2201..2205 | ForEach-Object {
     "00000000-0000-4000-8000-{0:D12}" -f $_
@@ -1736,6 +1737,11 @@ $optimizerContentTextList = ($optimizerContentIds | ForEach-Object {
 }) -join ", "
 
 $optimizerCleanupSql = @"
+delete from public.jobs
+where agent = 'publisher'
+  and task_type = 'content_publish'
+  and payload->>'request_id' = '$optimizerRequestId';
+
 delete from public.jobs
 where agent = 'qa'
   and task_type = 'content_qa'
@@ -2798,6 +2804,333 @@ where id = '$($optimizerContentIds[3])'::uuid;
 
     Write-Pass "Expanded-topic lineage persisted in draft evidence and QA"
     Write-Pass "Published expansion source remained unchanged after Content"
+
+    $prioritizeExpandedQaSql = @"
+update public.jobs
+set priority = -9000
+where id = '$expandedQaJobId'::uuid
+  and agent = 'qa'
+  and task_type = 'content_qa'
+  and status = 'queued';
+
+select priority
+from public.jobs
+where id = '$expandedQaJobId'::uuid;
+"@
+
+    $expandedQaPriority = [string](
+        @(Invoke-LocalSql -Sql $prioritizeExpandedQaSql) |
+            Select-Object -Last 1
+    )
+
+    if ($expandedQaPriority.Trim() -ne "-9000") {
+        throw "Unable to prioritize the expanded-topic QA job"
+    }
+
+    $expandedQaResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"qa"}'
+
+    if (
+        -not $expandedQaResponse.ok -or
+        -not $expandedQaResponse.claimed -or
+        $expandedQaResponse.agent -ne "qa" -or
+        $expandedQaResponse.job_id -ne $expandedQaJobId -or
+        $expandedQaResponse.qa.status -ne "approved" -or
+        -not $expandedQaResponse.publish_job.id
+    ) {
+        $expandedQaDiagnostic =
+            $expandedQaResponse |
+                ConvertTo-Json -Depth 12 -Compress
+
+        throw (
+            "Expanded-topic QA response is invalid. " +
+            "Actual: $expandedQaDiagnostic"
+        )
+    }
+
+    $expandedPublishJobId =
+        [string]$expandedQaResponse.publish_job.id
+
+    Write-Pass "QA Worker approved the expanded-topic draft"
+    Write-Pass "QA Worker created an expanded-topic Publisher job"
+
+    $expandedQaStateSql = @"
+select
+  status || '|' || attempts || '|' ||
+  (result->>'content_id') || '|' ||
+  (result->>'publish_job_id')
+from public.jobs
+where id = '$expandedQaJobId'::uuid;
+
+select
+  agent || '|' || task_type || '|' || status || '|' || attempts || '|' ||
+  (payload->>'content_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'source_repeat_job_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'source_content_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'referral_link_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'execution_dedupe_key') || '|' ||
+  (payload->'topic_expansion'->'safeguards'->>'preserve_source_content') || '|' ||
+  (payload->'topic_expansion'->'safeguards'->>'require_source_topic') || '|' ||
+  (payload->'topic_expansion'->'safeguards'->>'allow_duplicate_topics')
+from public.jobs
+where id = '$expandedPublishJobId'::uuid;
+"@
+
+    $expandedQaState = @(
+        Invoke-LocalSql -Sql $expandedQaStateSql
+    )
+
+    if ($expandedQaState.Count -ne 2) {
+        throw (
+            "Expected two expanded-topic QA rows, found: " +
+            $expandedQaState.Count
+        )
+    }
+
+    $expectedExpandedQaResult =
+        "completed|1|$expandedDraftId|$expandedPublishJobId"
+
+    if (
+        ([string]$expandedQaState[0]).Trim() -ne
+            $expectedExpandedQaResult
+    ) {
+        throw "Expanded-topic QA result was not persisted correctly"
+    }
+
+    $expectedExpandedPublisher =
+        "publisher|content_publish|queued|0|$expandedDraftId|" +
+        "$($topicExpansionResult.lineage.source_repeat_job_id)|" +
+        "$($optimizerContentIds[3])|$($optimizerLinkIds[3])|" +
+        "$($expandedResearchLineage.execution_dedupe_key)|" +
+        "true|true|false"
+
+    if (
+        ([string]$expandedQaState[1]).Trim() -ne
+            $expectedExpandedPublisher
+    ) {
+        throw "Expanded-topic Publisher lineage was not persisted correctly"
+    }
+
+    Write-Pass "Expanded-topic lineage persisted through QA to Publisher"
+
+    $prioritizeExpandedPublisherSql = @"
+update public.jobs
+set priority = -9000
+where id = '$expandedPublishJobId'::uuid
+  and agent = 'publisher'
+  and task_type = 'content_publish'
+  and status = 'queued';
+
+select priority
+from public.jobs
+where id = '$expandedPublishJobId'::uuid;
+"@
+
+    $expandedPublisherPriority = [string](
+        @(Invoke-LocalSql -Sql $prioritizeExpandedPublisherSql) |
+            Select-Object -Last 1
+    )
+
+    if ($expandedPublisherPriority.Trim() -ne "-9000") {
+        throw "Unable to prioritize the expanded-topic Publisher job"
+    }
+
+    $expandedPublisherResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"publisher"}'
+
+    $expandedPublicationLineage =
+        $expandedPublisherResponse.publication.topic_expansion.lineage
+
+    if (
+        -not $expandedPublisherResponse.ok -or
+        -not $expandedPublisherResponse.claimed -or
+        $expandedPublisherResponse.agent -ne "publisher" -or
+        $expandedPublisherResponse.job_id -ne $expandedPublishJobId -or
+        $expandedPublisherResponse.reused -or
+        $expandedPublisherResponse.publication.content_id -ne
+            $expandedDraftId -or
+        $expandedPublicationLineage.source_repeat_job_id -ne
+            $topicExpansionResult.lineage.source_repeat_job_id -or
+        $expandedPublicationLineage.source_content_id -ne
+            $optimizerContentIds[3] -or
+        $expandedPublicationLineage.referral_link_id -ne
+            $optimizerLinkIds[3] -or
+        $expandedPublicationLineage.execution_dedupe_key -ne
+            $expandedResearchLineage.execution_dedupe_key
+    ) {
+        $expandedPublisherDiagnostic =
+            $expandedPublisherResponse |
+                ConvertTo-Json -Depth 12 -Compress
+
+        throw (
+            "Expanded-topic Publisher response is invalid. " +
+            "Actual: $expandedPublisherDiagnostic"
+        )
+    }
+
+    $expandedPublishedUrl =
+        "https://example.local/published/$($expandedContentResponse.content.slug)"
+
+    $expandedPublisherStateSql = @"
+select
+  j.status || '|' || j.attempts || '|' || c.status || '|' ||
+  (c.published_url = '$expandedPublishedUrl') || '|' ||
+  (j.result->>'reused') || '|' ||
+  (j.result->'topic_expansion'->'lineage'->>'source_repeat_job_id') || '|' ||
+  (j.result->'topic_expansion'->'lineage'->>'source_content_id') || '|' ||
+  (j.result->'topic_expansion'->'lineage'->>'referral_link_id') || '|' ||
+  (j.result->'topic_expansion'->'lineage'->>'execution_dedupe_key')
+from public.jobs j
+join public.content c
+  on c.id = (j.payload->>'content_id')::uuid
+where j.id = '$expandedPublishJobId'::uuid;
+
+select
+  status || '|' || slug || '|' || published_url || '|' ||
+  program_id || '|' || referral_link_id
+from public.content
+where id = '$($optimizerContentIds[3])'::uuid;
+"@
+
+    $expandedPublisherState = @(
+        Invoke-LocalSql -Sql $expandedPublisherStateSql
+    )
+
+    $expectedExpandedPublished =
+        "completed|1|published|true|false|" +
+        "$($topicExpansionResult.lineage.source_repeat_job_id)|" +
+        "$($optimizerContentIds[3])|$($optimizerLinkIds[3])|" +
+        "$($expandedResearchLineage.execution_dedupe_key)"
+
+    if (
+        $expandedPublisherState.Count -ne 2 -or
+        ([string]$expandedPublisherState[0]).Trim() -ne
+            $expectedExpandedPublished
+    ) {
+        throw "Expanded-topic publication result was not persisted correctly"
+    }
+
+    if (
+        ([string]$expandedPublisherState[1]).Trim() -ne
+            $expectedScaleContent
+    ) {
+        throw "Expanded-topic Publisher changed the published source content"
+    }
+
+    Write-Pass "Publisher Worker published the expanded-topic draft"
+    Write-Pass "Expanded-topic publication lineage persisted correctly"
+    Write-Pass "Published expansion source remained unchanged after Publisher"
+
+    $createExpandedReusePublisherSql = @"
+insert into public.jobs (
+  id, agent, task_type, status, priority, payload, max_attempts
+)
+select
+  '$expandedReusePublishJobId'::uuid,
+  agent,
+  task_type,
+  'queued',
+  -9001,
+  jsonb_set(
+    payload,
+    '{_meta,dedupe_key}',
+    to_jsonb('${expandedReusePublishJobId}:content_publish_reuse'::text),
+    true
+  ),
+  max_attempts
+from public.jobs
+where id = '$expandedPublishJobId'::uuid;
+
+select count(*)
+from public.jobs
+where id = '$expandedReusePublishJobId'::uuid
+  and status = 'queued';
+"@
+
+    $expandedReusePublisherCreated = [string](
+        @(Invoke-LocalSql -Sql $createExpandedReusePublisherSql) |
+            Select-Object -Last 1
+    )
+
+    if ($expandedReusePublisherCreated.Trim() -ne "1") {
+        throw "Unable to create the repeated expanded-topic Publisher job"
+    }
+
+    $expandedReusePublisherResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"publisher"}'
+
+    $expandedReuseLineage =
+        $expandedReusePublisherResponse.publication.topic_expansion.lineage
+
+    if (
+        -not $expandedReusePublisherResponse.ok -or
+        -not $expandedReusePublisherResponse.claimed -or
+        $expandedReusePublisherResponse.agent -ne "publisher" -or
+        $expandedReusePublisherResponse.job_id -ne
+            $expandedReusePublishJobId -or
+        -not $expandedReusePublisherResponse.reused -or
+        $expandedReusePublisherResponse.provider -ne "stored" -or
+        $expandedReuseLineage.source_repeat_job_id -ne
+            $topicExpansionResult.lineage.source_repeat_job_id -or
+        $expandedReuseLineage.source_content_id -ne
+            $optimizerContentIds[3] -or
+        $expandedReuseLineage.referral_link_id -ne
+            $optimizerLinkIds[3] -or
+        $expandedReuseLineage.execution_dedupe_key -ne
+            $expandedResearchLineage.execution_dedupe_key
+    ) {
+        $expandedReuseDiagnostic =
+            $expandedReusePublisherResponse |
+                ConvertTo-Json -Depth 12 -Compress
+
+        throw (
+            "Repeated expanded-topic Publisher response is invalid. " +
+            "Actual: $expandedReuseDiagnostic"
+        )
+    }
+
+    $expandedReuseStateSql = @"
+select
+  status || '|' || attempts || '|' ||
+  (result->>'provider') || '|' ||
+  (result->>'reused') || '|' ||
+  (result->'topic_expansion'->'lineage'->>'source_repeat_job_id') || '|' ||
+  (result->'topic_expansion'->'lineage'->>'source_content_id') || '|' ||
+  (result->'topic_expansion'->'lineage'->>'referral_link_id') || '|' ||
+  (result->'topic_expansion'->'lineage'->>'execution_dedupe_key')
+from public.jobs
+where id = '$expandedReusePublishJobId'::uuid;
+"@
+
+    $expandedReuseState = [string](
+        @(Invoke-LocalSql -Sql $expandedReuseStateSql) |
+            Select-Object -Last 1
+    )
+
+    $expectedExpandedReuse =
+        "completed|1|stored|true|" +
+        "$($topicExpansionResult.lineage.source_repeat_job_id)|" +
+        "$($optimizerContentIds[3])|$($optimizerLinkIds[3])|" +
+        "$($expandedResearchLineage.execution_dedupe_key)"
+
+    if ($expandedReuseState.Trim() -ne $expectedExpandedReuse) {
+        throw "Repeated expanded-topic Publisher result was not persisted correctly"
+    }
+
+    Write-Pass "Repeated Publisher dispatch reused the expanded-topic publication"
+    Write-Pass "Repeated publication preserved expanded-topic lineage"
 }
 finally {
     Invoke-LocalSql -Sql $optimizerCleanupSql | Out-Null
@@ -2812,7 +3145,7 @@ select
         '$repeatScaleReuseJobId'::uuid
       )
       or (
-        agent in ('repeat', 'content', 'topic_scout', 'research') and
+        agent in ('repeat', 'content', 'topic_scout', 'research', 'qa', 'publisher') and
         payload->>'source_content_id' in ($optimizerContentTextList)
       )
       or (
