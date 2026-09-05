@@ -1737,6 +1737,14 @@ $optimizerContentTextList = ($optimizerContentIds | ForEach-Object {
 
 $optimizerCleanupSql = @"
 delete from public.jobs
+where agent = 'qa'
+  and task_type = 'content_qa'
+  and payload->>'request_id' = '$optimizerRequestId';
+
+delete from public.content
+where evidence->>'request_id' = '$optimizerRequestId';
+
+delete from public.jobs
 where agent = 'content'
   and task_type = 'content_draft'
   and payload->>'request_id' = '$optimizerRequestId';
@@ -2598,6 +2606,198 @@ where id = '$($optimizerContentIds[3])'::uuid;
 
     Write-Pass "Expanded-topic lineage persisted through Research to Content"
     Write-Pass "Published expansion source remained unchanged after Research"
+
+    $prioritizeExpandedContentSql = @"
+update public.jobs
+set priority = -9000
+where id = '$expandedContentJobId'::uuid
+  and agent = 'content'
+  and task_type = 'content_draft'
+  and status = 'queued';
+
+select priority
+from public.jobs
+where id = '$expandedContentJobId'::uuid;
+"@
+
+    $expandedContentPriority = [string](
+        @(Invoke-LocalSql -Sql $prioritizeExpandedContentSql) |
+            Select-Object -Last 1
+    )
+
+    if ($expandedContentPriority.Trim() -ne "-9000") {
+        throw "Unable to prioritize the expanded-topic Content job"
+    }
+
+    try {
+        $expandedContentResponse = Invoke-RestMethod `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -Headers @{ apikey = $controllerSecret } `
+            -ContentType "application/json" `
+            -Body '{"action":"dispatch","agent":"content"}'
+    }
+    catch {
+        $expandedContentErrorBody = ""
+        $errorResponse = $_.Exception.Response
+
+        if ($errorResponse) {
+            $errorStream = $errorResponse.GetResponseStream()
+
+            if ($errorStream) {
+                $errorReader = New-Object `
+                    -TypeName System.IO.StreamReader `
+                    -ArgumentList $errorStream
+
+                try {
+                    $expandedContentErrorBody =
+                        $errorReader.ReadToEnd()
+                }
+                finally {
+                    $errorReader.Dispose()
+                    $errorStream.Dispose()
+                }
+            }
+        }
+
+        throw (
+            "Expanded-topic Content dispatch failed. " +
+            "Response: $expandedContentErrorBody; " +
+            "Error: $($_.Exception.Message)"
+        )
+    }
+
+    if (
+        -not $expandedContentResponse.ok -or
+        -not $expandedContentResponse.claimed -or
+        $expandedContentResponse.agent -ne "content" -or
+        $expandedContentResponse.job_id -ne $expandedContentJobId -or
+        -not $expandedContentResponse.content.created -or
+        -not $expandedContentResponse.qa_job.id
+    ) {
+        $expandedContentDiagnostic =
+            $expandedContentResponse |
+                ConvertTo-Json -Depth 12 -Compress
+
+        throw (
+            "Expanded-topic Content response is invalid. " +
+            "Actual: $expandedContentDiagnostic"
+        )
+    }
+
+    $expandedDraftId =
+        [string]$expandedContentResponse.content.id
+    $expandedQaJobId =
+        [string]$expandedContentResponse.qa_job.id
+
+    Write-Pass "Content Worker created an expanded-topic draft and QA job"
+
+    $expandedContentStateSql = @"
+select
+  status || '|' || attempts || '|' ||
+  (result->>'content_id') || '|' ||
+  (result->>'qa_job_id')
+from public.jobs
+where id = '$expandedContentJobId'::uuid;
+
+select
+  status || '|' ||
+  (evidence->'topic_expansion'->'lineage'->>'source_repeat_job_id') || '|' ||
+  (evidence->'topic_expansion'->'lineage'->>'source_content_id') || '|' ||
+  (evidence->'topic_expansion'->'lineage'->>'referral_link_id') || '|' ||
+  (evidence->'topic_expansion'->'lineage'->>'execution_dedupe_key') || '|' ||
+  (evidence->'topic_expansion'->'safeguards'->>'preserve_source_content') || '|' ||
+  (evidence->'topic_expansion'->'safeguards'->>'require_source_topic') || '|' ||
+  (evidence->'topic_expansion'->'safeguards'->>'allow_duplicate_topics')
+from public.content
+where id = '$expandedDraftId'::uuid;
+
+select
+  agent || '|' || task_type || '|' || status || '|' || attempts || '|' ||
+  (payload->>'content_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'source_repeat_job_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'source_content_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'referral_link_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'execution_dedupe_key') || '|' ||
+  (payload->'topic_expansion'->'safeguards'->>'preserve_source_content') || '|' ||
+  (payload->'topic_expansion'->'safeguards'->>'require_source_topic') || '|' ||
+  (payload->'topic_expansion'->'safeguards'->>'allow_duplicate_topics')
+from public.jobs
+where id = '$expandedQaJobId'::uuid;
+
+select
+  status || '|' || slug || '|' || published_url || '|' ||
+  program_id || '|' || referral_link_id
+from public.content
+where id = '$($optimizerContentIds[3])'::uuid;
+"@
+
+    $expandedContentState = @(
+        Invoke-LocalSql -Sql $expandedContentStateSql
+    )
+
+    if ($expandedContentState.Count -ne 4) {
+        throw (
+            "Expected four expanded-topic Content rows, found: " +
+            $expandedContentState.Count
+        )
+    }
+
+    $expectedExpandedContentResult =
+        "completed|1|$expandedDraftId|$expandedQaJobId"
+
+    if (
+        ([string]$expandedContentState[0]).Trim() -ne
+            $expectedExpandedContentResult
+    ) {
+        throw "Expanded-topic Content result was not persisted correctly"
+    }
+
+    $expectedExpandedDraft =
+        "draft|" +
+        "$($topicExpansionResult.lineage.source_repeat_job_id)|" +
+        "$($optimizerContentIds[3])|$($optimizerLinkIds[3])|" +
+        "$($expandedResearchLineage.execution_dedupe_key)|" +
+        "true|true|false"
+
+    if (
+        ([string]$expandedContentState[1]).Trim() -ne
+            $expectedExpandedDraft
+    ) {
+        throw (
+            "Expanded-topic draft lineage was not persisted correctly. " +
+            "Expected: $expectedExpandedDraft; Actual: " +
+            ([string]$expandedContentState[1]).Trim()
+        )
+    }
+
+    $expectedExpandedQa =
+        "qa|content_qa|queued|0|$expandedDraftId|" +
+        "$($topicExpansionResult.lineage.source_repeat_job_id)|" +
+        "$($optimizerContentIds[3])|$($optimizerLinkIds[3])|" +
+        "$($expandedResearchLineage.execution_dedupe_key)|" +
+        "true|true|false"
+
+    if (
+        ([string]$expandedContentState[2]).Trim() -ne
+            $expectedExpandedQa
+    ) {
+        throw (
+            "Expanded-topic QA lineage was not persisted correctly. " +
+            "Expected: $expectedExpandedQa; Actual: " +
+            ([string]$expandedContentState[2]).Trim()
+        )
+    }
+
+    if (
+        ([string]$expandedContentState[3]).Trim() -ne
+            $expectedScaleContent
+    ) {
+        throw "Expanded-topic Content changed the published source content"
+    }
+
+    Write-Pass "Expanded-topic lineage persisted in draft evidence and QA"
+    Write-Pass "Published expansion source remained unchanged after Content"
 }
 finally {
     Invoke-LocalSql -Sql $optimizerCleanupSql | Out-Null
