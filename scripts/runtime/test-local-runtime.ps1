@@ -1737,8 +1737,23 @@ $optimizerContentTextList = ($optimizerContentIds | ForEach-Object {
 
 $optimizerCleanupSql = @"
 delete from public.jobs
+where agent = 'content'
+  and task_type = 'content_draft'
+  and payload->>'request_id' = '$optimizerRequestId';
+
+delete from public.jobs
 where agent = 'research'
   and payload->>'request_id' = '$optimizerRequestId';
+
+delete from public.referral_links
+where program_id in (
+  select id
+  from public.programs
+  where notes::jsonb->>'request_id' = '$optimizerRequestId'
+);
+
+delete from public.programs
+where notes::jsonb->>'request_id' = '$optimizerRequestId';
 
 delete from public.jobs
 where agent = 'topic_scout'
@@ -2426,6 +2441,163 @@ where id = '$($optimizerContentIds[3])'::uuid;
 
     Write-Pass "Topic Expansion persisted its result and Research queue"
     Write-Pass "Published Topic Expansion source remained unchanged"
+
+    $expandedResearchJobId = [string](
+        $topicExpansionResearchJobs[0].id
+    )
+
+    if (-not $expandedResearchJobId) {
+        throw "Expanded-topic Research job id is missing"
+    }
+
+    $promoteExpandedResearchSql = @"
+update public.jobs
+set payload = jsonb_set(
+  payload,
+  '{recommended_action}',
+  to_jsonb('content_candidate'::text),
+  true
+)
+where id = '$expandedResearchJobId'::uuid
+  and agent = 'research'
+  and task_type = 'topic_research'
+  and status = 'queued';
+
+select payload->>'recommended_action'
+from public.jobs
+where id = '$expandedResearchJobId'::uuid;
+"@
+
+    $expandedResearchPromotion = [string](
+        @(Invoke-LocalSql -Sql $promoteExpandedResearchSql) |
+            Select-Object -Last 1
+    )
+
+    if ($expandedResearchPromotion.Trim() -ne "content_candidate") {
+        throw "Unable to promote the expanded-topic Research job"
+    }
+
+    Write-Pass "Expanded-topic Research diagnostic promoted to Content"
+
+    $expandedResearchResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"research"}'
+
+    $expandedResearchJobIds = @(
+        $topicExpansionResearchJobs |
+            ForEach-Object { [string]$_.id }
+    )
+    $expandedResearchLineage =
+        $expandedResearchResponse.topic_expansion.lineage
+
+    if (
+        -not $expandedResearchResponse.ok -or
+        -not $expandedResearchResponse.claimed -or
+        $expandedResearchResponse.agent -ne "research" -or
+        $expandedResearchResponse.job_id -notin
+            $expandedResearchJobIds
+    ) {
+        throw "Controller did not dispatch an expanded-topic Research job"
+    }
+
+    if (
+        -not $expandedResearchResponse.topic_expansion -or
+        $expandedResearchLineage.source_repeat_job_id -ne
+            $topicExpansionResult.lineage.source_repeat_job_id -or
+        $expandedResearchLineage.source_content_id -ne
+            $optimizerContentIds[3] -or
+        $expandedResearchLineage.referral_link_id -ne
+            $optimizerLinkIds[3] -or
+        -not $expandedResearchResponse.content_job
+    ) {
+        $expandedResearchDiagnostic =
+            $expandedResearchResponse |
+                ConvertTo-Json -Depth 12 -Compress
+
+        throw (
+            "Expanded-topic Research response lineage is invalid. " +
+            "Actual: $expandedResearchDiagnostic"
+        )
+    }
+
+    $expandedContentJobId =
+        [string]$expandedResearchResponse.content_job.id
+
+    Write-Pass "Research Worker accepted the Topic Expansion lineage"
+    Write-Pass "Research Worker created an expanded-topic Content job"
+
+    $expandedResearchStateSql = @"
+select
+  status || '|' || attempts || '|' ||
+  (result->'topic_expansion'->'lineage'->>'source_repeat_job_id') || '|' ||
+  (result->'topic_expansion'->'lineage'->>'source_content_id') || '|' ||
+  (result->'topic_expansion'->'lineage'->>'referral_link_id')
+from public.jobs
+where id = '$expandedResearchJobId'::uuid;
+
+select
+  agent || '|' || task_type || '|' || status || '|' || attempts || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'source_repeat_job_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'source_content_id') || '|' ||
+  (payload->'topic_expansion'->'lineage'->>'referral_link_id') || '|' ||
+  (payload->'topic_expansion'->'safeguards'->>'preserve_source_content')
+from public.jobs
+where id = '$expandedContentJobId'::uuid;
+
+select
+  status || '|' || slug || '|' || published_url || '|' ||
+  program_id || '|' || referral_link_id
+from public.content
+where id = '$($optimizerContentIds[3])'::uuid;
+"@
+
+    $expandedResearchState = @(
+        Invoke-LocalSql -Sql $expandedResearchStateSql
+    )
+
+    if ($expandedResearchState.Count -ne 3) {
+        throw (
+            "Expected three expanded-topic Research rows, found: " +
+            $expandedResearchState.Count
+        )
+    }
+
+    $expectedExpandedResearch =
+        "completed|1|" +
+        "$($topicExpansionResult.lineage.source_repeat_job_id)|" +
+        "$($optimizerContentIds[3])|$($optimizerLinkIds[3])"
+
+    if (
+        ([string]$expandedResearchState[0]).Trim() -ne
+            $expectedExpandedResearch
+    ) {
+        throw "Expanded-topic Research result was not persisted correctly"
+    }
+
+    $expectedExpandedContent =
+        "content|content_draft|queued|0|" +
+        "$($topicExpansionResult.lineage.source_repeat_job_id)|" +
+        "$($optimizerContentIds[3])|$($optimizerLinkIds[3])|true"
+
+    if (
+        ([string]$expandedResearchState[1]).Trim() -ne
+            $expectedExpandedContent
+    ) {
+        throw "Expanded-topic Content lineage was not persisted correctly"
+    }
+
+    if (
+        ([string]$expandedResearchState[2]).Trim() -ne
+            $expectedScaleContent
+    ) {
+        throw "Expanded-topic Research changed the published source content"
+    }
+
+    Write-Pass "Expanded-topic lineage persisted through Research to Content"
+    Write-Pass "Published expansion source remained unchanged after Research"
 }
 finally {
     Invoke-LocalSql -Sql $optimizerCleanupSql | Out-Null
