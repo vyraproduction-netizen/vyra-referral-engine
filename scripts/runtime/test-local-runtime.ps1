@@ -1742,6 +1742,9 @@ where agent = 'publisher'
   and task_type = 'content_publish'
   and payload->>'request_id' = '$optimizerRequestId';
 
+delete from public.analytics_events
+where content_id in ($optimizerContentIdList);
+
 delete from public.jobs
 where agent = 'qa'
   and task_type = 'content_qa'
@@ -1841,7 +1844,7 @@ values
 ('$($optimizerContentIds[0])'::uuid, 'Runtime Optimizer Collect',
  'runtime-optimizer-collect', 'published', '{}'::jsonb,
  'https://example.local/published/runtime-optimizer-collect', now(),
- '$optimizerProgramId'::uuid, '$($optimizerLinkIds[0])'::uuid, now()),
+ '$optimizerProgramId'::uuid, '$($optimizerLinkIds[1])'::uuid, now()),
 ('$($optimizerContentIds[1])'::uuid, 'Runtime Optimizer Improve',
  'runtime-optimizer-improve', 'published', '{}'::jsonb,
  'https://example.local/published/runtime-optimizer-improve', now(),
@@ -1858,6 +1861,71 @@ values
  'runtime-optimizer-skip', 'published', '{}'::jsonb,
  'https://example.local/published/runtime-optimizer-skip', now(),
  '$optimizerProgramId'::uuid, '$($optimizerLinkIds[4])'::uuid, now());
+
+insert into public.analytics_events (
+  event_type, content_id, referral_link_id,
+  session_id, source, value, created_at
+)
+select
+  'referral_click',
+  metric.content_id,
+  metric.referral_link_id,
+  'runtime-optimizer-click-' || metric.ordinal || '-' || event_number,
+  'runtime-test',
+  0,
+  now() - (event_number || ' seconds')::interval
+from (
+  values
+    (1, '$($optimizerContentIds[0])'::uuid,
+     '$($optimizerLinkIds[1])'::uuid, 10),
+    (2, '$($optimizerContentIds[1])'::uuid,
+     '$($optimizerLinkIds[1])'::uuid, 20),
+    (3, '$($optimizerContentIds[2])'::uuid,
+     '$($optimizerLinkIds[2])'::uuid, 100),
+    (4, '$($optimizerContentIds[3])'::uuid,
+     '$($optimizerLinkIds[3])'::uuid, 100),
+    (5, '$($optimizerContentIds[4])'::uuid,
+     '$($optimizerLinkIds[4])'::uuid, 100)
+) as metric(ordinal, content_id, referral_link_id, click_count)
+cross join lateral generate_series(1, metric.click_count) event_number;
+
+insert into public.analytics_events (
+  event_type, content_id, referral_link_id,
+  session_id, source, value, created_at
+)
+select
+  'conversion',
+  metric.content_id,
+  metric.referral_link_id,
+  'runtime-optimizer-conversion-' || metric.ordinal || '-' || event_number,
+  'runtime-test',
+  0,
+  now() - (event_number || ' minutes')::interval
+from (
+  values
+    (3, '$($optimizerContentIds[2])'::uuid,
+     '$($optimizerLinkIds[2])'::uuid, 4),
+    (4, '$($optimizerContentIds[3])'::uuid,
+     '$($optimizerLinkIds[3])'::uuid, 5),
+    (5, '$($optimizerContentIds[4])'::uuid,
+     '$($optimizerLinkIds[4])'::uuid, 5)
+) as metric(ordinal, content_id, referral_link_id, conversion_count)
+cross join lateral generate_series(1, metric.conversion_count) event_number;
+
+insert into public.analytics_events (
+  event_type, content_id, referral_link_id,
+  session_id, source, value, created_at
+)
+values
+('commission', '$($optimizerContentIds[2])'::uuid,
+ '$($optimizerLinkIds[2])'::uuid,
+ 'runtime-optimizer-commission-3', 'runtime-test', 25, now()),
+('commission', '$($optimizerContentIds[3])'::uuid,
+ '$($optimizerLinkIds[3])'::uuid,
+ 'runtime-optimizer-commission-4', 'runtime-test', 25, now()),
+('commission', '$($optimizerContentIds[4])'::uuid,
+ '$($optimizerLinkIds[4])'::uuid,
+ 'runtime-optimizer-commission-5', 'runtime-test', 25, now());
 
 update public.content
 set evidence = jsonb_build_object(
@@ -1978,6 +2046,28 @@ values (
     }
 
     Write-Pass "Optimizer produced all five deterministic actions"
+
+    $sharedLinkDecisions = @(
+        $optimizerDecisions |
+            Where-Object {
+                $_.content_id -eq $optimizerContentIds[0] -or
+                $_.content_id -eq $optimizerContentIds[1]
+            }
+    )
+
+    if (
+        $sharedLinkDecisions.Count -ne 2 -or
+        $sharedLinkDecisions[0].referral_link_id -ne
+            $sharedLinkDecisions[1].referral_link_id -or
+        $optimizerActualActions[$optimizerContentIds[0]] -ne
+            "collect_more_data" -or
+        $optimizerActualActions[$optimizerContentIds[1]] -ne
+            "improve_content"
+    ) {
+        throw "Shared referral link did not preserve content-specific decisions"
+    }
+
+    Write-Pass "Optimizer isolated metrics for content sharing one referral link"
 
     $optimizerRepeatJobs = @(
         $optimizerResponse.optimizer.repeat_jobs |
@@ -3156,6 +3246,9 @@ select
   (select count(*) from public.content
    where id in ($optimizerContentIdList))
   || '|' ||
+  (select count(*) from public.analytics_events
+   where content_id in ($optimizerContentIdList))
+  || '|' ||
   (select count(*) from public.referral_links
    where id in ($optimizerLinkIdList))
   || '|' ||
@@ -3168,7 +3261,7 @@ $optimizerRemaining = [string](
         Select-Object -Last 1
 )
 
-if ($optimizerRemaining.Trim() -ne "0|0|0|0") {
+if ($optimizerRemaining.Trim() -ne "0|0|0|0|0") {
     throw "Optimizer cleanup left diagnostic rows: $optimizerRemaining"
 }
 
