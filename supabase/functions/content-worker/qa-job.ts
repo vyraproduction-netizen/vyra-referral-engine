@@ -7,6 +7,12 @@ import type {
   ContentDraft,
   ContentJob,
 } from "./content.ts";
+import {
+  resolveContentExpandedTopicLineage,
+} from "./content-expanded-topic-lineage.ts";
+import type {
+  ResearchExpandedTopicLineage,
+} from "../research-worker/research-expanded-topic-lineage.ts";
 
 export type SavedContentDraft = {
   id: string;
@@ -22,6 +28,7 @@ export type QaJobPayload = {
   language: string;
   title: string;
   slug: string;
+  topic_expansion?: ResearchExpandedTopicLineage;
   _meta: {
     dedupe_key: string;
   };
@@ -53,6 +60,9 @@ export function buildQaJob(
     );
   }
 
+  const topicExpansion =
+    resolveContentExpandedTopicLineage(sourceJob);
+
   const dedupeKey = `${saved.id}:content_qa`;
 
   return {
@@ -69,6 +79,9 @@ export function buildQaJob(
       language: draft.language,
       title: draft.title,
       slug: saved.slug,
+      ...(topicExpansion
+        ? { topic_expansion: topicExpansion }
+        : {}),
       _meta: {
         dedupe_key: dedupeKey,
       },
