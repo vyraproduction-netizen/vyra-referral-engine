@@ -7,6 +7,15 @@ import type {
   OptimizationSnapshot,
 } from "./optimizer.ts";
 import {
+  rollupContentReferralEvents,
+} from "../analytics-worker/content-referral-metrics.ts";
+import type {
+  ContentAnalyticsEvent,
+} from "../analytics-worker/content-referral-metrics.ts";
+import {
+  buildContentOptimizationSnapshots,
+} from "./content-snapshots.ts";
+import {
   enqueueRepeatJobs,
 } from "./repeat-persistence.ts";
 
@@ -21,9 +30,6 @@ type ContentMetricRow = {
 type ReferralMetricRow = {
   id: string;
   status: string;
-  clicks: number;
-  conversions: number;
-  revenue: number | string;
 };
 
 export async function claimOptimizerJob() {
@@ -71,7 +77,7 @@ async function loadReferralMetricRows(): Promise<
   for (let from = 0;; from += pageSize) {
     const { data, error } = await client
       .from("referral_links")
-      .select("id, status, clicks, conversions, revenue")
+      .select("id, status")
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
 
@@ -92,44 +98,60 @@ async function loadReferralMetricRows(): Promise<
   return rows;
 }
 
+async function loadContentAnalyticsEvents(): Promise<
+  ContentAnalyticsEvent[]
+> {
+  const client = createSupabaseAdminClient();
+  const events: ContentAnalyticsEvent[] = [];
+
+  for (let from = 0;; from += pageSize) {
+    const { data, error } = await client
+      .from("analytics_events")
+      .select(
+        "id, event_type, content_id, referral_link_id, value, created_at",
+      )
+      .not("content_id", "is", null)
+      .not("referral_link_id", "is", null)
+      .in("event_type", [
+        "referral_click",
+        "conversion",
+        "commission",
+      ])
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+
+    if (error) {
+      throw new Error(
+        `Optimizer analytics event fetch failed: ${error.message}`,
+      );
+    }
+
+    const page = (data ?? []) as ContentAnalyticsEvent[];
+    events.push(...page);
+
+    if (page.length < pageSize) {
+      break;
+    }
+  }
+
+  return events;
+}
+
 export async function loadOptimizationSnapshots(): Promise<
   OptimizationSnapshot[]
 > {
-  const [contentRows, referralRows] = await Promise.all([
+  const [contentRows, referralRows, analyticsEvents] = await Promise.all([
     loadContentMetricRows(),
     loadReferralMetricRows(),
+    loadContentAnalyticsEvents(),
   ]);
-  const referralById = new Map(
-    referralRows.map((row) => [row.id, row]),
+  const metrics = rollupContentReferralEvents(analyticsEvents);
+
+  return buildContentOptimizationSnapshots(
+    contentRows,
+    referralRows,
+    metrics,
   );
-
-  return contentRows.map((content) => {
-    const referralLinkId = content.referral_link_id;
-
-    if (!referralLinkId) {
-      throw new Error(
-        `Optimizer content has no referral link: ${content.id}`,
-      );
-    }
-
-    const referral = referralById.get(referralLinkId);
-
-    if (!referral) {
-      throw new Error(
-        `Optimizer referral link not found: ${referralLinkId}`,
-      );
-    }
-
-    return {
-      content_id: content.id,
-      referral_link_id: referral.id,
-      content_status: content.status,
-      referral_link_status: referral.status,
-      clicks: referral.clicks,
-      conversions: referral.conversions,
-      revenue: referral.revenue,
-    };
-  });
 }
 
 export async function completeOptimizerJob(
