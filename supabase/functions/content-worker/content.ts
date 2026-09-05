@@ -7,6 +7,9 @@ import type {
 import type {
   ContentProvider,
 } from "./content-provider.ts";
+import {
+  resolveContentExpandedTopicLineage,
+} from "./content-expanded-topic-lineage.ts";
 
 export type ContentJob = VyraJob & {
   payload: ContentJobPayload;
@@ -127,6 +130,9 @@ export async function runContent(
   job: ContentJob,
   provider: ContentProvider,
 ): Promise<ContentDraft> {
+  const topicExpansion =
+    resolveContentExpandedTopicLineage(job);
+
   const generated = await provider({
     title: job.payload.candidate.title,
     url: job.payload.candidate.url,
@@ -160,6 +166,9 @@ export async function runContent(
       recommendation: job.payload.recommendation,
       research: job.payload.research,
       scores: job.payload.evidence,
+      ...(topicExpansion
+        ? { topic_expansion: topicExpansion }
+        : {}),
     },
   };
 }
