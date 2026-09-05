@@ -1378,6 +1378,298 @@ select
 }
 
 Write-Pass "Analytics diagnostic rows cleaned up"
+$contentMetricsProgramId =
+    "00000000-0000-4000-8000-000000001010"
+$contentMetricsLinkId =
+    "00000000-0000-4000-8000-000000001011"
+$contentMetricsContentAId =
+    "00000000-0000-4000-8000-000000001012"
+$contentMetricsContentBId =
+    "00000000-0000-4000-8000-000000001013"
+$contentMetricsJobIds = 14..16 | ForEach-Object {
+    "00000000-0000-4000-8000-{0:D12}" -f (1000 + $_)
+}
+$contentMetricsRequestIds = 24..26 | ForEach-Object {
+    "00000000-0000-4000-8000-{0:D12}" -f (1000 + $_)
+}
+
+$contentMetricsSetupSql = @"
+insert into public.programs (
+  id, name, official_url, status, countries, terms_verified
+)
+values (
+  '$contentMetricsProgramId'::uuid,
+  'Runtime Content Metrics Program',
+  'https://example.local/content-metrics-program',
+  'active',
+  '["EU"]'::jsonb,
+  true
+);
+
+insert into public.referral_links (
+  id, program_id, name, url, source, placement, status
+)
+values (
+  '$contentMetricsLinkId'::uuid,
+  '$contentMetricsProgramId'::uuid,
+  'Runtime Shared Content Metrics Link',
+  'https://example.local/ref/content-metrics',
+  'runtime-test',
+  'diagnostic',
+  'active'
+);
+
+insert into public.content (
+  id, title, slug, status, evidence, published_url,
+  published_at, program_id, referral_link_id, monetized_at
+)
+values
+(
+  '$contentMetricsContentAId'::uuid,
+  'Runtime Content Metrics A',
+  'runtime-content-metrics-a',
+  'published',
+  '{}'::jsonb,
+  'https://example.local/published/content-metrics-a',
+  now(),
+  '$contentMetricsProgramId'::uuid,
+  '$contentMetricsLinkId'::uuid,
+  now()
+),
+(
+  '$contentMetricsContentBId'::uuid,
+  'Runtime Content Metrics B',
+  'runtime-content-metrics-b',
+  'published',
+  '{}'::jsonb,
+  'https://example.local/published/content-metrics-b',
+  now(),
+  '$contentMetricsProgramId'::uuid,
+  '$contentMetricsLinkId'::uuid,
+  now()
+);
+
+insert into public.analytics_events (
+  id, event_type, content_id, referral_link_id,
+  session_id, source, value, created_at
+)
+values
+('00000000-0000-4000-8000-000000001017'::uuid,
+ 'referral_click', '$contentMetricsContentAId'::uuid,
+ '$contentMetricsLinkId'::uuid, 'runtime-content-a-1',
+ 'runtime-test', 0, '2026-09-05T10:00:00Z'),
+('00000000-0000-4000-8000-000000001018'::uuid,
+ 'referral_click', '$contentMetricsContentAId'::uuid,
+ '$contentMetricsLinkId'::uuid, 'runtime-content-a-2',
+ 'runtime-test', 0, '2026-09-05T10:01:00Z'),
+('00000000-0000-4000-8000-000000001019'::uuid,
+ 'conversion', '$contentMetricsContentAId'::uuid,
+ '$contentMetricsLinkId'::uuid, 'runtime-content-a-2',
+ 'runtime-test', 0, '2026-09-05T10:02:00Z'),
+('00000000-0000-4000-8000-000000001020'::uuid,
+ 'commission', '$contentMetricsContentAId'::uuid,
+ '$contentMetricsLinkId'::uuid, 'runtime-content-a-2',
+ 'runtime-test', 10, '2026-09-05T10:03:00Z'),
+('00000000-0000-4000-8000-000000001021'::uuid,
+ 'referral_click', '$contentMetricsContentBId'::uuid,
+ '$contentMetricsLinkId'::uuid, 'runtime-content-b-1',
+ 'runtime-test', 0, '2026-09-05T11:00:00Z'),
+('00000000-0000-4000-8000-000000001022'::uuid,
+ 'referral_click', '$contentMetricsContentBId'::uuid,
+ '$contentMetricsLinkId'::uuid, 'runtime-content-b-2',
+ 'runtime-test', 0, '2026-09-05T11:01:00Z'),
+('00000000-0000-4000-8000-000000001023'::uuid,
+ 'referral_click', '$contentMetricsContentBId'::uuid,
+ '$contentMetricsLinkId'::uuid, 'runtime-content-b-3',
+ 'runtime-test', 0, '2026-09-05T11:02:00Z');
+"@
+
+try {
+    Invoke-LocalSql -Sql $contentMetricsSetupSql | Out-Null
+
+    for ($run = 0; $run -lt 2; $run++) {
+        $jobId = $contentMetricsJobIds[$run]
+        $requestId = $contentMetricsRequestIds[$run]
+        $jobSql = @"
+insert into public.jobs (
+  id, agent, task_type, status, priority, payload, max_attempts
+)
+values (
+  '$jobId'::uuid,
+  'analytics',
+  'referral_rollup',
+  'queued',
+  -1000,
+  jsonb_build_object(
+    'request_id', '$requestId',
+    'scope', 'all',
+    '_meta', jsonb_build_object(
+      'dedupe_key', '${requestId}:referral_rollup'
+    )
+  ),
+  3
+);
+"@
+        Invoke-LocalSql -Sql $jobSql | Out-Null
+
+        $response = Invoke-RestMethod `
+            -Method Post `
+            -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+            -Headers @{ apikey = $controllerSecret } `
+            -ContentType "application/json" `
+            -Body '{"action":"dispatch","agent":"analytics"}'
+
+        if (
+            -not $response.ok -or
+            -not $response.claimed -or
+            $response.job_id -ne $jobId -or
+            $response.analytics.content_pairs_processed -ne 2
+        ) {
+            throw "Content-specific Analytics dispatch failed"
+        }
+
+        $stateSql = @"
+select string_agg(
+  content_id::text || ':' || clicks || ':' || conversions || ':' || revenue,
+  ',' order by content_id
+)
+from public.content_referral_metrics
+where referral_link_id = '$contentMetricsLinkId'::uuid;
+
+select clicks || '|' || conversions || '|' || revenue
+from public.referral_links
+where id = '$contentMetricsLinkId'::uuid;
+"@
+        $state = @(Invoke-LocalSql -Sql $stateSql)
+        $expectedPairs =
+            "${contentMetricsContentAId}:2:1:10.00," +
+            "${contentMetricsContentBId}:3:0:0.00"
+
+        if (
+            ([string]$state[0]).Trim() -ne $expectedPairs -or
+            ([string]$state[1]).Trim() -ne "5|1|10.00"
+        ) {
+            throw "Content-specific Analytics metrics were not persisted idempotently"
+        }
+    }
+
+    Write-Pass "Analytics persisted content-specific metrics idempotently"
+
+    $staleJobId = $contentMetricsJobIds[2]
+    $staleRequestId = $contentMetricsRequestIds[2]
+    $staleSetupSql = @"
+delete from public.analytics_events
+where content_id = '$contentMetricsContentAId'::uuid
+  and referral_link_id = '$contentMetricsLinkId'::uuid;
+
+insert into public.jobs (
+  id, agent, task_type, status, priority, payload, max_attempts
+)
+values (
+  '$staleJobId'::uuid,
+  'analytics',
+  'referral_rollup',
+  'queued',
+  -1000,
+  jsonb_build_object(
+    'request_id', '$staleRequestId',
+    'scope', 'all',
+    '_meta', jsonb_build_object(
+      'dedupe_key', '${staleRequestId}:referral_rollup'
+    )
+  ),
+  3
+);
+"@
+    Invoke-LocalSql -Sql $staleSetupSql | Out-Null
+
+    $staleResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"analytics"}'
+
+    if (
+        -not $staleResponse.ok -or
+        -not $staleResponse.claimed -or
+        $staleResponse.job_id -ne $staleJobId -or
+        $staleResponse.analytics.content_pairs_processed -ne 1
+    ) {
+        throw "Stale content-specific Analytics dispatch failed"
+    }
+
+    $staleStateSql = @"
+select
+  count(*) || '|' ||
+  min(content_id::text) || '|' ||
+  min(clicks) || '|' || min(conversions) || '|' || min(revenue)
+from public.content_referral_metrics
+where referral_link_id = '$contentMetricsLinkId'::uuid;
+
+select clicks || '|' || conversions || '|' || revenue
+from public.referral_links
+where id = '$contentMetricsLinkId'::uuid;
+"@
+    $staleState = @(Invoke-LocalSql -Sql $staleStateSql)
+
+    if (
+        ([string]$staleState[0]).Trim() -ne
+            "1|${contentMetricsContentBId}|3|0|0.00" -or
+        ([string]$staleState[1]).Trim() -ne "3|0|0.00"
+    ) {
+        throw "Analytics did not delete only the stale content metric pair"
+    }
+
+    Write-Pass "Analytics removed only the stale shared-link content pair"
+}
+finally {
+    $contentMetricsJobIdList = ($contentMetricsJobIds | ForEach-Object {
+        "'$_'::uuid"
+    }) -join ", "
+    $contentMetricsContentIdList = @(
+        "'$contentMetricsContentAId'::uuid",
+        "'$contentMetricsContentBId'::uuid"
+    ) -join ", "
+    $contentMetricsCleanupSql = @"
+delete from public.jobs
+where id in ($contentMetricsJobIdList);
+
+delete from public.analytics_events
+where referral_link_id = '$contentMetricsLinkId'::uuid;
+
+delete from public.content
+where id in ($contentMetricsContentIdList);
+
+delete from public.referral_links
+where id = '$contentMetricsLinkId'::uuid;
+
+delete from public.programs
+where id = '$contentMetricsProgramId'::uuid;
+
+select
+  (select count(*) from public.jobs
+   where id in ($contentMetricsJobIdList)) || '|' ||
+  (select count(*) from public.analytics_events
+   where referral_link_id = '$contentMetricsLinkId'::uuid) || '|' ||
+  (select count(*) from public.content_referral_metrics
+   where referral_link_id = '$contentMetricsLinkId'::uuid) || '|' ||
+  (select count(*) from public.content
+   where id in ($contentMetricsContentIdList)) || '|' ||
+  (select count(*) from public.referral_links
+   where id = '$contentMetricsLinkId'::uuid) || '|' ||
+  (select count(*) from public.programs
+   where id = '$contentMetricsProgramId'::uuid);
+"@
+    $cleanup = @(Invoke-LocalSql -Sql $contentMetricsCleanupSql)
+    $cleanupState = [string]($cleanup | Select-Object -Last 1)
+
+    if ($cleanupState.Trim() -ne "0|0|0|0|0|0") {
+        throw "Content-specific Analytics cleanup left diagnostic rows behind"
+    }
+}
+
+Write-Pass "Content-specific Analytics diagnostic rows cleaned up"
 $attributionProgramId =
     "00000000-0000-4000-8000-000000001900"
 $attributionLinkId =
