@@ -21,6 +21,9 @@ import type {
   ResearchFinding,
   ResearchJob,
 } from "./research.ts";
+import type {
+  ResearchExpandedTopicLineage,
+} from "./research-expanded-topic-lineage.ts";
 
 export async function claimResearchJob() {
   const store = createSupabaseJobStore();
@@ -30,12 +33,14 @@ export async function claimResearchJob() {
 export async function createResearchContentJob(
   job: ResearchJob,
   result: ResearchFinding,
+  topicExpansion: ResearchExpandedTopicLineage | null = null,
 ) {
   const store = createSupabaseJobStore();
   return await enqueueContentJob(
     store,
     job,
     result,
+    topicExpansion,
   );
 }
 

@@ -15,6 +15,9 @@ import {
   assertResearchJob,
   runResearch,
 } from "./research.ts";
+import {
+  resolveResearchExpandedTopicLineage,
+} from "./research-expanded-topic-lineage.ts";
 
 const researchProviderName = resolveResearchProviderName(
   Deno.env.get("RESEARCH_PROVIDER"),
@@ -39,6 +42,9 @@ Deno.serve(async () => {
 
     assertResearchJob(job);
 
+    const topicExpansion =
+      resolveResearchExpandedTopicLineage(job);
+
     const researchResult = await runResearch(
       job,
       researchProvider,
@@ -56,6 +62,7 @@ Deno.serve(async () => {
     const contentJob = await createResearchContentJob(
       job,
       researchResult,
+      topicExpansion,
     );
 
     const completion = await completeResearchJob(
@@ -64,6 +71,9 @@ Deno.serve(async () => {
         ...researchResult,
         program,
         referral_link: referralLink,
+        ...(topicExpansion
+          ? { topic_expansion: topicExpansion }
+          : {}),
       },
     );
 
@@ -83,6 +93,7 @@ Deno.serve(async () => {
       program,
       referral_link: referralLink,
       content_job: contentJob,
+      topic_expansion: topicExpansion,
       completion,
     });
   } catch (error) {
