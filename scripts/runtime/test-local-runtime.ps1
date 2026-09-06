@@ -227,6 +227,28 @@ if (-not $controllerSecret) {
     throw "VYRA_CONTROLLER_SECRET is empty"
 }
 
+$workerSecretSetting = Get-Content -LiteralPath $localEnvPath |
+    Where-Object {
+        $_ -match '^\s*VYRA_WORKER_SECRET\s*='
+    } |
+    Select-Object -Last 1
+
+if (-not $workerSecretSetting) {
+    throw "VYRA_WORKER_SECRET is required for direct worker tests"
+}
+
+$workerSecret = (
+    $workerSecretSetting -split '=', 2
+)[1].Trim().Trim('"').Trim("'")
+
+if (-not $workerSecret) {
+    throw "VYRA_WORKER_SECRET is empty"
+}
+
+$workerHeaders = @{
+    "x-vyra-worker-secret" = $workerSecret
+}
+
 $unauthorizedStatus = $null
 try {
     $unauthorizedResponse = Invoke-WebRequest `
@@ -3768,6 +3790,7 @@ values (
     $contentRevisionFirst = Invoke-RestMethod `
         -Method Post `
         -Uri "$SupabaseUrl/functions/v1/content-worker" `
+        -Headers $workerHeaders `
         -ContentType "application/json" `
         -Body "{}"
 
@@ -3800,6 +3823,7 @@ where id = '$contentRevisionJobId'::uuid;
     $contentRevisionSecond = Invoke-RestMethod `
         -Method Post `
         -Uri "$SupabaseUrl/functions/v1/content-worker" `
+        -Headers $workerHeaders `
         -ContentType "application/json" `
         -Body "{}"
 

@@ -18,6 +18,9 @@ import {
 import {
   resolveResearchExpandedTopicLineage,
 } from "./research-expanded-topic-lineage.ts";
+import {
+  authorizeWorkerRequest,
+} from "../_shared/vyra/worker-auth.ts";
 
 const researchProviderName = resolveResearchProviderName(
   Deno.env.get("RESEARCH_PROVIDER"),
@@ -26,7 +29,19 @@ const researchProvider = createResearchProvider(
   researchProviderName,
 );
 
-Deno.serve(async () => {
+Deno.serve(async (request) => {
+  const authorization = authorizeWorkerRequest(
+    request,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
   let job = null;
 
   try {
