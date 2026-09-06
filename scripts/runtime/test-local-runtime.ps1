@@ -120,6 +120,15 @@ if ($rpcOutput[-1].Trim() -ne "0") {
 }
 Write-Pass "Queue claim and completion contract passed with rollback"
 
+$topicScoutEnvPath = Join-Path $ProjectRoot "supabase/functions/.env"
+$topicScoutWorkerSetting = Get-Content -LiteralPath $topicScoutEnvPath |
+    Where-Object { $_ -match '^\s*VYRA_WORKER_SECRET\s*=' } |
+    Select-Object -Last 1
+if (-not $topicScoutWorkerSetting) { throw "VYRA_WORKER_SECRET is required for Topic Scout runtime tests" }
+$topicScoutWorkerSecret = ($topicScoutWorkerSetting -split '=', 2)[1].Trim().Trim('"').Trim("'")
+if (-not $topicScoutWorkerSecret) { throw "VYRA_WORKER_SECRET is empty" }
+$topicScoutWorkerHeaders = @{ "x-vyra-worker-secret" = $topicScoutWorkerSecret }
+
 $requestId = [guid]::NewGuid().Guid
 $jobId = [guid]::NewGuid().Guid
 $body = @{
@@ -141,6 +150,7 @@ try {
     $first = Invoke-RestMethod `
         -Method Post `
         -Uri "$SupabaseUrl/functions/v1/topic-scout" `
+        -Headers $topicScoutWorkerHeaders `
         -ContentType "application/json" `
         -Body $body
 
@@ -156,6 +166,7 @@ try {
     $second = Invoke-RestMethod `
         -Method Post `
         -Uri "$SupabaseUrl/functions/v1/topic-scout" `
+        -Headers $topicScoutWorkerHeaders `
         -ContentType "application/json" `
         -Body $body
 
@@ -248,6 +259,32 @@ if (-not $workerSecret) {
 $workerHeaders = @{
     "x-vyra-worker-secret" = $workerSecret
 }
+
+function Assert-WorkerRejectsMissingSecret {
+    param([Parameter(Mandatory = $true)][string]$WorkerName)
+    $status = $null
+    try {
+        $requestParameters = @{
+            UseBasicParsing = $true
+            Method = "Post"
+            Uri = "$SupabaseUrl/functions/v1/$WorkerName"
+            ContentType = "application/json"
+            Body = "{}"
+        }
+        Invoke-WebRequest @requestParameters | Out-Null
+        $status = 200
+    }
+    catch {
+        if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+        else { throw }
+    }
+    if ($status -ne 401) { throw "$WorkerName request without a worker secret must return HTTP 401" }
+}
+
+@("topic-scout", "qa-worker", "publisher-worker") | ForEach-Object {
+    Assert-WorkerRejectsMissingSecret -WorkerName $_
+}
+Write-Pass "Remaining workers reject unauthenticated requests"
 
 $unauthorizedStatus = $null
 try {

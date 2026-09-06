@@ -16,6 +16,9 @@ import { createTopicExpansionSourceLoader } from "./topic-expansion-source.ts";
 import {
   attachTopicExpansionLineageToJobs,
 } from "./expanded-topic-research.ts";
+import {
+  authorizeWorkerRequest,
+} from "../_shared/vyra/worker-auth.ts";
 
 const researchProviderType =
   Deno.env.get("RESEARCH_PROVIDER") ?? "mock";
@@ -217,17 +220,19 @@ function buildCandidates(seed: string): TopicCandidate[] {
 }
 
 Deno.serve(async (req: Request) => {
-  try {
-    if (req.method !== "POST") {
-      return Response.json(
-        {
-          ok: false,
-          error: "POST required",
-        },
-        { status: 405 },
-      );
-    }
+  const authorization = authorizeWorkerRequest(
+    req,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
 
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
+  try {
     const body = (await req.json()) as RunRequest;
 
     if (body.action !== "run") {

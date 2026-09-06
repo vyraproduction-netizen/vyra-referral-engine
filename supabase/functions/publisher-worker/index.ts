@@ -12,8 +12,23 @@ import type { PublishResult } from "./publisher.ts";
 import {
   resolvePublisherExpandedTopicLineage,
 } from "./publisher-expanded-topic-lineage.ts";
+import {
+  authorizeWorkerRequest,
+} from "../_shared/vyra/worker-auth.ts";
 
-Deno.serve(async () => {
+Deno.serve(async (request) => {
+  const authorization = authorizeWorkerRequest(
+    request,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
   let job = null;
   const providerName = Deno.env.get("PUBLISH_PROVIDER");
 
