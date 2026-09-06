@@ -1,24 +1,15 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { withSupabase } from "npm:@supabase/server@1.4.1";
-import {
-  createAdminClient,
-} from "npm:@supabase/server@1.4.1/core";
-import {
-  prepareProgramActivation,
-} from "./program-activation.ts";
-import type {
-  ProgramActivationInput,
-} from "./program-activation.ts";
+import { createAdminClient } from "npm:@supabase/server@1.4.1/core";
+import { prepareProgramActivation } from "./program-activation.ts";
+import type { ProgramActivationInput } from "./program-activation.ts";
 import {
   prepareControllerAttributionRequest,
 } from "./analytics-attribution.ts";
+import { prepareAttributedEvent } from "../analytics-worker/attribution.ts";
+import type { AttributedEventInsert } from "../analytics-worker/attribution.ts";
 import {
-  prepareAttributedEvent,
-} from "../analytics-worker/attribution.ts";
-import type {
-  AttributedEventInsert,
-} from "../analytics-worker/attribution.ts";
-import {
+  createWorkerDispatchHeaders,
   resolveWorkerDispatchRoute,
   supportedDispatchAgents,
 } from "./worker-dispatch.ts";
@@ -146,13 +137,12 @@ function stableJson(value: unknown): string {
     const entries = Object.entries(
       value as Record<string, unknown>,
     ).filter(([, item]) => item !== undefined)
-      .sort(([left], [right]) =>
-      left.localeCompare(right)
-    );
+      .sort(([left], [right]) => left.localeCompare(right));
 
-    return `{${entries.map(([key, item]) =>
-      `${JSON.stringify(key)}:${stableJson(item)}`
-    ).join(",")}}`;
+    return `{${
+      entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+        .join(",")
+    }}`;
   }
 
   return JSON.stringify(value) ?? "null";
@@ -183,8 +173,7 @@ function getErrorMessage(error: unknown): string {
 }
 
 function getSupabaseAdminSecret(): string {
-  const adminSecret =
-    Deno.env.get("SUPABASE_SECRET_KEY") ??
+  const adminSecret = Deno.env.get("SUPABASE_SECRET_KEY") ??
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
   if (!adminSecret) {
@@ -207,8 +196,7 @@ function getSupabaseUrl(): string {
 }
 
 function getControllerAuthConfig() {
-  const localSecret =
-    Deno.env.get("VYRA_CONTROLLER_SECRET");
+  const localSecret = Deno.env.get("VYRA_CONTROLLER_SECRET");
 
   if (!localSecret) {
     return {
@@ -227,25 +215,24 @@ function getControllerAuthConfig() {
   };
 }
 
-const controllerAdmin =
-  createAdminClient<ControllerDatabase>({
-    env: {
-      url: getSupabaseUrl(),
-      secretKeys: {
-        default: getSupabaseAdminSecret(),
-      },
+const controllerAdmin = createAdminClient<ControllerDatabase>({
+  env: {
+    url: getSupabaseUrl(),
+    secretKeys: {
+      default: getSupabaseAdminSecret(),
     },
-  });
+  },
+});
 
 export default {
-fetch: withSupabase<ControllerDatabase>(
+  fetch: withSupabase<ControllerDatabase>(
     getControllerAuthConfig(),
     async (req, ctx) => {
       try {
         if (req.method !== "POST") {
           return Response.json(
             { ok: false, error: "POST required" },
-            { status: 405 }
+            { status: 405 },
           );
         }
 
@@ -256,10 +243,9 @@ fetch: withSupabase<ControllerDatabase>(
           body = {};
         }
 
-        const action =
-          typeof body.action === "string"
-            ? body.action.trim().toLowerCase()
-            : "claim";
+        const action = typeof body.action === "string"
+          ? body.action.trim().toLowerCase()
+          : "claim";
 
         if (!(allowedActions as readonly string[]).includes(action)) {
           return Response.json(
@@ -268,7 +254,7 @@ fetch: withSupabase<ControllerDatabase>(
               error: "Invalid action",
               allowed_actions: [...allowedActions],
             },
-            { status: 400 }
+            { status: 400 },
           );
         }
 
@@ -284,8 +270,7 @@ fetch: withSupabase<ControllerDatabase>(
           let request;
 
           try {
-            request =
-              prepareControllerAttributionRequest(body);
+            request = prepareControllerAttributionRequest(body);
           } catch (error) {
             return Response.json(
               {
@@ -297,12 +282,11 @@ fetch: withSupabase<ControllerDatabase>(
             );
           }
 
-          const { data: content, error: contentError } =
-            await controllerAdmin
-              .from("content")
-              .select("id, status, referral_link_id")
-              .eq("id", request.content_id)
-              .maybeSingle();
+          const { data: content, error: contentError } = await controllerAdmin
+            .from("content")
+            .select("id, status, referral_link_id")
+            .eq("id", request.content_id)
+            .maybeSingle();
 
           if (contentError) {
             return Response.json(
@@ -373,8 +357,7 @@ fetch: withSupabase<ControllerDatabase>(
                 {
                   ok: false,
                   action,
-                  error:
-                    "Analytics dedupe key collision",
+                  error: "Analytics dedupe key collision",
                 },
                 { status: 409 },
               );
@@ -388,21 +371,19 @@ fetch: withSupabase<ControllerDatabase>(
             });
           }
 
-          const { data: inserted, error: insertError } =
-            await controllerAdmin
-              .from("analytics_events")
-              .insert(prepared)
-              .select(eventColumns)
-              .single();
+          const { data: inserted, error: insertError } = await controllerAdmin
+            .from("analytics_events")
+            .insert(prepared)
+            .select(eventColumns)
+            .single();
 
           if (insertError) {
             if (insertError.code === "23505") {
-              const { data: raced, error: racedError } =
-                await controllerAdmin
-                  .from("analytics_events")
-                  .select(eventColumns)
-                  .eq("dedupe_key", prepared.dedupe_key)
-                  .maybeSingle();
+              const { data: raced, error: racedError } = await controllerAdmin
+                .from("analytics_events")
+                .select(eventColumns)
+                .eq("dedupe_key", prepared.dedupe_key)
+                .maybeSingle();
 
               if (
                 !racedError &&
@@ -454,27 +435,21 @@ fetch: withSupabase<ControllerDatabase>(
             );
           }
 
-          const { data, error } =
-            await controllerAdmin.rpc(
-              "activate_program",
-              {
-                p_program_id: activation.program_id,
-                p_affiliate_url:
-                  activation.affiliate_url,
-                p_terms_url: activation.terms_url,
-                p_commission_type:
-                  activation.commission_type,
-                p_commission_value:
-                  activation.commission_value,
-                p_recurring: activation.recurring,
-                p_cookie_duration_days:
-                  activation.cookie_duration_days,
-                p_countries: activation.countries,
-                p_verified_by: activation.verified_by,
-                p_verification_note:
-                  activation.verification_note,
-              },
-            );
+          const { data, error } = await controllerAdmin.rpc(
+            "activate_program",
+            {
+              p_program_id: activation.program_id,
+              p_affiliate_url: activation.affiliate_url,
+              p_terms_url: activation.terms_url,
+              p_commission_type: activation.commission_type,
+              p_commission_value: activation.commission_value,
+              p_recurring: activation.recurring,
+              p_cookie_duration_days: activation.cookie_duration_days,
+              p_countries: activation.countries,
+              p_verified_by: activation.verified_by,
+              p_verification_note: activation.verification_note,
+            },
+          );
 
           if (error) {
             return Response.json(
@@ -495,72 +470,68 @@ fetch: withSupabase<ControllerDatabase>(
         }
 
         if (action === "dispatch") {
-          const agent =
-            typeof body.agent === "string" && body.agent.trim()
-              ? body.agent.trim()
-              : "topic_scout";
-          const workerName =
-            resolveWorkerDispatchRoute(agent);
+          const agent = typeof body.agent === "string" && body.agent.trim()
+            ? body.agent.trim()
+            : "topic_scout";
+          const workerName = resolveWorkerDispatchRoute(agent);
 
           if (workerName) {
+            const supabaseUrl = Deno.env.get("SUPABASE_URL");
 
-          const supabaseUrl = Deno.env.get("SUPABASE_URL");
+            if (!supabaseUrl) {
+              return Response.json(
+                { ok: false, error: "SUPABASE_URL is required" },
+                { status: 500 },
+              );
+            }
 
-          if (!supabaseUrl) {
+            const workerResponse = await fetch(
+              `${supabaseUrl}/functions/v1/${workerName}`,
+              {
+                method: "POST",
+                headers: createWorkerDispatchHeaders(
+                  Deno.env.get("VYRA_WORKER_SECRET"),
+                ),
+                body: "{}",
+              },
+            );
+
+            const workerData = await workerResponse.json();
+
             return Response.json(
-              { ok: false, error: "SUPABASE_URL is required" },
-              { status: 500 }
+              {
+                action: "dispatch",
+                agent,
+                ...workerData,
+              },
+              { status: workerResponse.status },
             );
           }
-
-          const workerResponse = await fetch(
-            `${supabaseUrl}/functions/v1/${workerName}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: "{}",
-            }
-          );
-
-          const workerData = await workerResponse.json();
-
-          return Response.json(
-            {
-              action: "dispatch",
-              agent,
-              ...workerData,
-            },
-            { status: workerResponse.status }
-          );
-        }
 
           if (agent !== "topic_scout") {
             return Response.json(
               {
                 ok: false,
-                error:
-                  `Dispatch supports ${supportedDispatchAgents.join(", ")} only`,
+                error: `Dispatch supports ${
+                  supportedDispatchAgents.join(", ")
+                } only`,
               },
               { status: 400 },
             );
           }
 
-          const { data, error } =
-            await controllerAdmin.rpc("claim_next_job", {
-              p_agent: agent,
-            });
+          const { data, error } = await controllerAdmin.rpc("claim_next_job", {
+            p_agent: agent,
+          });
 
           if (error) {
             return Response.json(
               { ok: false, action, agent, error: error.message },
-              { status: 500 }
+              { status: 500 },
             );
           }
 
-          const job =
-            Array.isArray(data) ? data[0] ?? null : data ?? null;
+          const job = Array.isArray(data) ? data[0] ?? null : data ?? null;
 
           if (!job) {
             return Response.json({
@@ -583,15 +554,15 @@ fetch: withSupabase<ControllerDatabase>(
               `${supabaseUrl}/functions/v1/topic-scout`,
               {
                 method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
+                headers: createWorkerDispatchHeaders(
+                  Deno.env.get("VYRA_WORKER_SECRET"),
+                ),
                 body: JSON.stringify({
                   action: "run",
                   job_id: job.id,
                   payload: job.payload,
                 }),
-              }
+              },
             );
 
             const scoutData = await scoutResponse.json();
@@ -599,7 +570,7 @@ fetch: withSupabase<ControllerDatabase>(
             if (!scoutResponse.ok || !scoutData.ok) {
               throw new Error(
                 scoutData.error ??
-                  `topic-scout HTTP ${scoutResponse.status}`
+                  `topic-scout HTTP ${scoutResponse.status}`,
               );
             }
 
@@ -627,8 +598,8 @@ fetch: withSupabase<ControllerDatabase>(
           } catch (error) {
             const message = getErrorMessage(error);
 
-            const { data: retried, error: retryError } =
-              await controllerAdmin.rpc("retry_job", {
+            const { data: retried, error: retryError } = await controllerAdmin
+              .rpc("retry_job", {
                 p_job_id: job.id,
                 p_error_message: message,
               });
@@ -643,15 +614,14 @@ fetch: withSupabase<ControllerDatabase>(
                 retry_error: retryError?.message ?? null,
                 retried: retried ?? null,
               },
-              { status: 500 }
+              { status: 500 },
             );
           }
         }
         if (action === "claim") {
-          const agent =
-            typeof body.agent === "string" && body.agent.trim()
-              ? body.agent.trim()
-              : "topic_scout";
+          const agent = typeof body.agent === "string" && body.agent.trim()
+            ? body.agent.trim()
+            : "topic_scout";
 
           if (!allowedAgents.has(agent)) {
             return Response.json(
@@ -660,24 +630,22 @@ fetch: withSupabase<ControllerDatabase>(
                 error: "Invalid agent",
                 allowed_agents: [...allowedAgents],
               },
-              { status: 400 }
+              { status: 400 },
             );
           }
 
-          const { data, error } =
-            await controllerAdmin.rpc("claim_next_job", {
-              p_agent: agent,
-            });
+          const { data, error } = await controllerAdmin.rpc("claim_next_job", {
+            p_agent: agent,
+          });
 
           if (error) {
             return Response.json(
               { ok: false, action, agent, error: error.message },
-              { status: 500 }
+              { status: 500 },
             );
           }
 
-          const job =
-            Array.isArray(data) ? data[0] ?? null : data ?? null;
+          const job = Array.isArray(data) ? data[0] ?? null : data ?? null;
 
           return Response.json({
             ok: true,
@@ -689,33 +657,30 @@ fetch: withSupabase<ControllerDatabase>(
         }
 
         if (action === "complete") {
-          const jobId =
-            typeof body.job_id === "string" ? body.job_id : null;
+          const jobId = typeof body.job_id === "string" ? body.job_id : null;
 
           if (!jobId) {
             return Response.json(
               { ok: false, error: "job_id is required" },
-              { status: 400 }
+              { status: 400 },
             );
           }
 
-          const result =
-            body.result && typeof body.result === "object"
-              ? body.result
-              : {};
+          const result = body.result && typeof body.result === "object"
+            ? body.result
+            : {};
 
-          const { data, error } =
-            await controllerAdmin.rpc("complete_job", {
-              p_job_id: jobId,
-              p_status: "completed",
-              p_result: result,
-              p_error_message: null,
-            });
+          const { data, error } = await controllerAdmin.rpc("complete_job", {
+            p_job_id: jobId,
+            p_status: "completed",
+            p_result: result,
+            p_error_message: null,
+          });
 
           if (error) {
             return Response.json(
               { ok: false, action, error: error.message },
-              { status: 500 }
+              { status: 500 },
             );
           }
 
@@ -727,31 +692,28 @@ fetch: withSupabase<ControllerDatabase>(
         }
 
         if (action === "retry") {
-          const jobId =
-            typeof body.job_id === "string" ? body.job_id : null;
+          const jobId = typeof body.job_id === "string" ? body.job_id : null;
 
           if (!jobId) {
             return Response.json(
               { ok: false, error: "job_id is required" },
-              { status: 400 }
+              { status: 400 },
             );
           }
 
-          const errorMessage =
-            typeof body.error_message === "string"
-              ? body.error_message
-              : "Unknown job error";
+          const errorMessage = typeof body.error_message === "string"
+            ? body.error_message
+            : "Unknown job error";
 
-          const { data, error } =
-            await controllerAdmin.rpc("retry_job", {
-              p_job_id: jobId,
-              p_error_message: errorMessage,
-            });
+          const { data, error } = await controllerAdmin.rpc("retry_job", {
+            p_job_id: jobId,
+            p_error_message: errorMessage,
+          });
 
           if (error) {
             return Response.json(
               { ok: false, action, error: error.message },
-              { status: 500 }
+              { status: 500 },
             );
           }
 
@@ -764,14 +726,14 @@ fetch: withSupabase<ControllerDatabase>(
 
         return Response.json(
           { ok: false, error: "Unhandled action" },
-          { status: 500 }
+          { status: 500 },
         );
       } catch (error) {
         return Response.json(
           { ok: false, error: getErrorMessage(error) },
-          { status: 500 }
+          { status: 500 },
         );
       }
-    }
+    },
   ),
 };

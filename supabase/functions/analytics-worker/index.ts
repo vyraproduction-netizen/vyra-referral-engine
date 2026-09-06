@@ -7,17 +7,24 @@ import {
   saveContentReferralMetrics,
   saveReferralMetrics,
 } from "./db.ts";
-import {
-  assertAnalyticsJob,
-} from "./analytics-job.ts";
-import {
-  rollupReferralEvents,
-} from "./analytics.ts";
-import {
-  rollupContentReferralEvents,
-} from "./content-referral-metrics.ts";
+import { assertAnalyticsJob } from "./analytics-job.ts";
+import { rollupReferralEvents } from "./analytics.ts";
+import { rollupContentReferralEvents } from "./content-referral-metrics.ts";
+import { authorizeWorkerRequest } from "../_shared/vyra/worker-auth.ts";
 
-Deno.serve(async () => {
+Deno.serve(async (request) => {
+  const authorization = authorizeWorkerRequest(
+    request,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
   let job = null;
 
   try {
@@ -33,8 +40,7 @@ Deno.serve(async () => {
 
     assertAnalyticsJob(job);
 
-    const referralLinkIds =
-      await loadReferralLinkIds();
+    const referralLinkIds = await loadReferralLinkIds();
     const events = await loadAnalyticsEvents();
     const metrics = rollupReferralEvents(
       events,
@@ -82,19 +88,14 @@ Deno.serve(async () => {
     if (job?.id) {
       await retryAnalyticsJob(
         job.id,
-        error instanceof Error
-          ? error.message
-          : String(error),
+        error instanceof Error ? error.message : String(error),
       );
     }
 
     return Response.json(
       {
         ok: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        error: error instanceof Error ? error.message : String(error),
       },
       { status: 500 },
     );
