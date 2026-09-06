@@ -2008,6 +2008,8 @@ Write-Pass "Attributed analytics diagnostic rows cleaned up"
 
 $optimizerProgramId = "00000000-0000-4000-8000-000000002200"
 $optimizerJobId = "00000000-0000-4000-8000-000000002220"
+$optimizerAnalyticsJobId = "00000000-0000-4000-8000-000000002223"
+$optimizerAnalyticsRequestId = "00000000-0000-4000-8000-000000002228"
 $repeatReuseJobId = "00000000-0000-4000-8000-000000002221"
 $repeatScaleReuseJobId = "00000000-0000-4000-8000-000000002222"
 $expandedReusePublishJobId = "00000000-0000-4000-8000-000000002230"
@@ -2029,6 +2031,9 @@ $optimizerContentTextList = ($optimizerContentIds | ForEach-Object {
 }) -join ", "
 
 $optimizerCleanupSql = @"
+delete from public.jobs
+where id = '$optimizerAnalyticsJobId'::uuid;
+
 delete from public.jobs
 where agent = 'publisher'
   and task_type = 'content_publish'
@@ -2230,6 +2235,26 @@ insert into public.jobs (
   id, agent, task_type, status, priority, payload, max_attempts
 )
 values (
+  '$optimizerAnalyticsJobId'::uuid,
+  'analytics',
+  'referral_rollup',
+  'queued',
+  -5000,
+  jsonb_build_object(
+    'request_id', '$optimizerAnalyticsRequestId',
+    'scope', 'all',
+    '_meta', jsonb_build_object(
+      'dedupe_key',
+      '${optimizerAnalyticsRequestId}:referral_rollup'
+    )
+  ),
+  3
+);
+
+insert into public.jobs (
+  id, agent, task_type, status, priority, payload, max_attempts
+)
+values (
   '$optimizerJobId'::uuid,
   'optimizer',
   'performance_optimization',
@@ -2249,6 +2274,44 @@ values (
 
     Invoke-LocalSql -Sql $optimizerSetupSql | Out-Null
     Write-Pass "Optimizer diagnostic metrics and job created"
+
+    $optimizerAnalyticsResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body '{"action":"dispatch","agent":"analytics"}'
+
+    if (
+        -not $optimizerAnalyticsResponse.ok -or
+        -not $optimizerAnalyticsResponse.claimed -or
+        $optimizerAnalyticsResponse.job_id -ne $optimizerAnalyticsJobId -or
+        $optimizerAnalyticsResponse.analytics.content_pairs_processed -ne 5
+    ) {
+        throw "Analytics did not prepare stored Optimizer metrics"
+    }
+
+    $storedOptimizerMetricsSql = @"
+select count(*) || '|' ||
+       sum(clicks) || '|' ||
+       sum(conversions) || '|' ||
+       sum(revenue)
+from public.content_referral_metrics
+where content_id in ($optimizerContentIdList);
+"@
+    $storedOptimizerMetrics = [string](
+        @(Invoke-LocalSql -Sql $storedOptimizerMetricsSql) |
+            Select-Object -Last 1
+    )
+
+    if ($storedOptimizerMetrics.Trim() -ne "5|330|14|75.00") {
+        throw (
+            "Stored Optimizer metrics are invalid: " +
+            $storedOptimizerMetrics
+        )
+    }
+
+    Write-Pass "Analytics prepared stored content metrics for Optimizer"
 
     $optimizerDispatchBody =
         '{"action":"dispatch","agent":"optimizer"}'
@@ -2424,7 +2487,7 @@ where agent = 'repeat'
     }
 
     $optimizerExpectedMetrics =
-        "10:0:0.00,20:0:0.00,100:4:25.00," +
+        "0:0:0.00,30:0:0.00,100:4:25.00," +
         "100:5:25.00,100:5:25.00"
 
     if ($optimizerMetricsState.Trim() -ne $optimizerExpectedMetrics) {
@@ -3523,6 +3586,7 @@ select
   (select count(*) from public.jobs
    where id in (
         '$optimizerJobId'::uuid,
+        '$optimizerAnalyticsJobId'::uuid,
         '$repeatReuseJobId'::uuid,
         '$repeatScaleReuseJobId'::uuid
       )
@@ -3541,6 +3605,9 @@ select
   (select count(*) from public.analytics_events
    where content_id in ($optimizerContentIdList))
   || '|' ||
+  (select count(*) from public.content_referral_metrics
+   where content_id in ($optimizerContentIdList))
+  || '|' ||
   (select count(*) from public.referral_links
    where id in ($optimizerLinkIdList))
   || '|' ||
@@ -3553,7 +3620,7 @@ $optimizerRemaining = [string](
         Select-Object -Last 1
 )
 
-if ($optimizerRemaining.Trim() -ne "0|0|0|0|0") {
+if ($optimizerRemaining.Trim() -ne "0|0|0|0|0|0") {
     throw "Optimizer cleanup left diagnostic rows: $optimizerRemaining"
 }
 
