@@ -73,7 +73,7 @@ try {
             Add-Result "PASS" "Git repository" "Valid work tree"
 
             $branch = [string](& git branch --show-current 2>$null)
-            if ($branch.Trim()) {
+            if ($branch -and $branch.Trim()) {
                 Add-Result "PASS" "Git branch" $branch.Trim()
             }
             else {
