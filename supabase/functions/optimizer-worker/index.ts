@@ -5,14 +5,23 @@ import {
   loadOptimizationSnapshots,
   retryOptimizerJob,
 } from "./db.ts";
-import {
-  assertOptimizerJob,
-} from "./optimizer-job.ts";
-import {
-  rankOptimizationDecisions,
-} from "./optimizer.ts";
+import { assertOptimizerJob } from "./optimizer-job.ts";
+import { rankOptimizationDecisions } from "./optimizer.ts";
+import { authorizeWorkerRequest } from "../_shared/vyra/worker-auth.ts";
 
-Deno.serve(async () => {
+Deno.serve(async (request) => {
+  const authorization = authorizeWorkerRequest(
+    request,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
   let job = null;
 
   try {
@@ -41,18 +50,14 @@ Deno.serve(async () => {
       decisions,
       repeat_jobs: repeatJobs,
       actions: {
-        skip: decisions.filter((item) =>
-          item.action === "skip"
-        ).length,
+        skip: decisions.filter((item) => item.action === "skip").length,
         collect_more_data: decisions.filter((item) =>
           item.action === "collect_more_data"
         ).length,
         improve_content: decisions.filter((item) =>
           item.action === "improve_content"
         ).length,
-        monitor: decisions.filter((item) =>
-          item.action === "monitor"
-        ).length,
+        monitor: decisions.filter((item) => item.action === "monitor").length,
         scale_content: decisions.filter((item) =>
           item.action === "scale_content"
         ).length,
@@ -71,19 +76,14 @@ Deno.serve(async () => {
     if (job?.id) {
       await retryOptimizerJob(
         job.id,
-        error instanceof Error
-          ? error.message
-          : String(error),
+        error instanceof Error ? error.message : String(error),
       );
     }
 
     return Response.json(
       {
         ok: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        error: error instanceof Error ? error.message : String(error),
       },
       { status: 500 },
     );

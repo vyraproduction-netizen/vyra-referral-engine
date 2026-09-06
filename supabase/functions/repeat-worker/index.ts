@@ -5,14 +5,23 @@ import {
   createTopicExpansionFromPlan,
   retryRepeatJob,
 } from "./db.ts";
-import {
-  routeRepeatDownstream,
-} from "./downstream.ts";
-import {
-  runRepeatJob,
-} from "./repeat-job.ts";
+import { routeRepeatDownstream } from "./downstream.ts";
+import { runRepeatJob } from "./repeat-job.ts";
+import { authorizeWorkerRequest } from "../_shared/vyra/worker-auth.ts";
 
-Deno.serve(async () => {
+Deno.serve(async (request) => {
+  const authorization = authorizeWorkerRequest(
+    request,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
   let job = null;
 
   try {
@@ -49,19 +58,14 @@ Deno.serve(async () => {
     if (job?.id) {
       await retryRepeatJob(
         job.id,
-        error instanceof Error
-          ? error.message
-          : String(error),
+        error instanceof Error ? error.message : String(error),
       );
     }
 
     return Response.json(
       {
         ok: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : String(error),
+        error: error instanceof Error ? error.message : String(error),
       },
       { status: 500 },
     );
