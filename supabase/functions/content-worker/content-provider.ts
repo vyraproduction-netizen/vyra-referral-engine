@@ -1,4 +1,7 @@
 import {
+  createOpenAIContentProvider,
+} from "./openai-content.ts";
+import {
   generateMockContent,
 } from "./mock-content.ts";
 
@@ -32,7 +35,8 @@ export type ContentProvider = (
 
 export type ContentProviderName =
   | "disabled"
-  | "mock";
+  | "mock"
+  | "openai";
 
 export function resolveContentProviderName(
   value: string | undefined,
@@ -47,6 +51,10 @@ export function resolveContentProviderName(
     return "mock";
   }
 
+  if (normalized === "openai") {
+    return "openai";
+  }
+
   throw new Error(
     `Unsupported CONTENT_PROVIDER: ${value}`,
   );
@@ -57,6 +65,10 @@ export function createContentProvider(
 ): ContentProvider {
   if (name === "mock") {
     return generateMockContent;
+  }
+
+  if (name === "openai") {
+    return createOpenAIContentProvider();
   }
 
   return () => Promise.reject(
