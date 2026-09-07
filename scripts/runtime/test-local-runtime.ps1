@@ -53,20 +53,29 @@ if ($runningContainers -notcontains $DatabaseContainer) {
 }
 Write-Pass "Local database container is running"
 
-$diagnostics = Invoke-RestMethod `
-    -Method Get `
-    -Uri "$SupabaseUrl/functions/v1/vyra-diagnostics"
+$diagnosticsUnauthorizedStatus = $null
+try {
+    Invoke-WebRequest `
+        -UseBasicParsing `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-diagnostics" `
+        -ContentType "application/json" `
+        -Body "{}" | Out-Null
+    $diagnosticsUnauthorizedStatus = 200
+}
+catch {
+    if ($_.Exception.Response) {
+        $diagnosticsUnauthorizedStatus = [int]$_.Exception.Response.StatusCode
+    }
+    else {
+        throw
+    }
+}
 
-if (-not $diagnostics.ok) {
-    throw "vyra-diagnostics returned ok=false"
+if ($diagnosticsUnauthorizedStatus -ne 401) {
+    throw "vyra-diagnostics request without a worker secret must return HTTP 401"
 }
-if ($diagnostics.environment.SUPABASE_URL -ne "SET") {
-    throw "Local Edge Runtime has no SUPABASE_URL"
-}
-if ($diagnostics.environment.SUPABASE_SERVICE_ROLE_KEY -ne "SET") {
-    throw "Local Edge Runtime has no SUPABASE_SERVICE_ROLE_KEY"
-}
-Write-Pass "Edge Runtime diagnostics passed"
+Write-Pass "Diagnostics rejects unauthenticated requests"
 
 $rpcId = [guid]::NewGuid().Guid
 $rpcAgent = "diagnostic_$($rpcId.Replace('-', ''))"
@@ -259,6 +268,24 @@ if (-not $workerSecret) {
 $workerHeaders = @{
     "x-vyra-worker-secret" = $workerSecret
 }
+
+$diagnostics = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$SupabaseUrl/functions/v1/vyra-diagnostics" `
+    -Headers $workerHeaders `
+    -ContentType "application/json" `
+    -Body "{}"
+
+if (-not $diagnostics.ok) {
+    throw "Authenticated vyra-diagnostics returned ok=false"
+}
+if ($diagnostics.environment.SUPABASE_URL -ne "SET") {
+    throw "Local Edge Runtime has no SUPABASE_URL"
+}
+if ($diagnostics.environment.SUPABASE_SERVICE_ROLE_KEY -ne "SET") {
+    throw "Local Edge Runtime has no SUPABASE_SERVICE_ROLE_KEY"
+}
+Write-Pass "Authenticated Edge Runtime diagnostics passed"
 
 function Assert-WorkerRejectsMissingSecret {
     param([Parameter(Mandatory = $true)][string]$WorkerName)
