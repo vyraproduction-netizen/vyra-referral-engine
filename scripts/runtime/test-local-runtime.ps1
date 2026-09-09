@@ -313,6 +313,7 @@ function Assert-WorkerRejectsMissingSecret {
 }
 Write-Pass "Remaining workers reject unauthenticated requests"
 
+$missingJobStatusId = [guid]::NewGuid().Guid
 $unauthorizedStatus = $null
 try {
     $unauthorizedResponse = Invoke-WebRequest `
@@ -320,7 +321,7 @@ try {
         -Method Post `
         -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
         -ContentType "application/json" `
-        -Body '{"action":"health"}'
+        -Body (@{ action = "job_status"; job_id = $missingJobStatusId } | ConvertTo-Json -Compress)
 
     $unauthorizedStatus = [int]$unauthorizedResponse.StatusCode
 }
@@ -352,6 +353,21 @@ if ($controllerHealth.status -ne "online") {
     throw "Authenticated controller health is not online"
 }
 Write-Pass "Controller authenticated health passed"
+
+$missingJobStatus = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+    -Headers @{ apikey = $controllerSecret } `
+    -ContentType "application/json" `
+    -Body (@{ action = "job_status"; job_id = $missingJobStatusId } | ConvertTo-Json -Compress)
+
+if (-not $missingJobStatus.ok -or $missingJobStatus.action -ne "job_status") {
+    throw "Controller job_status returned an invalid missing-job response"
+}
+if ($null -ne $missingJobStatus.job) {
+    throw "Controller job_status returned a job that does not exist"
+}
+Write-Pass "Controller job_status safely reports a missing job"
 
 $scoutJobId = [guid]::NewGuid().Guid
 $programId = "00000000-0000-0000-0000-000000000000"
@@ -389,6 +405,26 @@ values (
 "@
 
 Invoke-LocalSql -Sql $scoutInsertSql | Out-Null
+
+$scoutJobStatus = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+    -Headers @{ apikey = $controllerSecret } `
+    -ContentType "application/json" `
+    -Body (@{ action = "job_status"; job_id = $scoutJobId } | ConvertTo-Json -Compress)
+
+if (-not $scoutJobStatus.ok -or $scoutJobStatus.job.id -ne $scoutJobId) {
+    throw "Controller job_status did not return the queued Scout job"
+}
+if ($scoutJobStatus.job.status -ne "queued" -or $scoutJobStatus.job.agent -ne "topic_scout") {
+    throw "Controller job_status returned unexpected queued Scout job fields"
+}
+if ($scoutJobStatus.job.PSObject.Properties.Name -contains "payload" -or
+    $scoutJobStatus.job.PSObject.Properties.Name -contains "result" -or
+    $scoutJobStatus.job.PSObject.Properties.Name -contains "error_message") {
+    throw "Controller job_status returned non-status job data"
+}
+Write-Pass "Controller job_status returns only safe status fields"
 
 try {
     $scoutResponse = Invoke-RestMethod `

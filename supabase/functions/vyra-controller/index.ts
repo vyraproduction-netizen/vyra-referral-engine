@@ -32,6 +32,22 @@ type ControllerDatabase = {
         Update: Record<string, unknown>;
         Relationships: [];
       };
+      jobs: {
+        Row: {
+          id: string;
+          agent: string;
+          task_type: string;
+          status: string;
+          attempts: number;
+          max_attempts: number;
+          next_run_at: string | null;
+          started_at: string | null;
+          completed_at: string | null;
+        };
+        Insert: Record<string, unknown>;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
       analytics_events: {
         Row: {
           id: string;
@@ -119,6 +135,7 @@ const allowedActions = [
   "complete",
   "retry",
   "health",
+  "job_status",
   "dispatch",
   "activate_program",
   "record_analytics_event",
@@ -263,6 +280,40 @@ export default {
             ok: true,
             service: "vyra-controller",
             status: "online",
+          });
+        }
+
+        if (action === "job_status") {
+          const jobId = typeof body.job_id === "string"
+            ? body.job_id.trim()
+            : "";
+
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
+            return Response.json(
+              { ok: false, action, error: "A valid job_id UUID is required" },
+              { status: 400 },
+            );
+          }
+
+          const { data: job, error } = await controllerAdmin
+            .from("jobs")
+            .select(
+              "id, agent, task_type, status, attempts, max_attempts, next_run_at, started_at, completed_at",
+            )
+            .eq("id", jobId)
+            .maybeSingle();
+
+          if (error) {
+            return Response.json(
+              { ok: false, action, error: error.message },
+              { status: 500 },
+            );
+          }
+
+          return Response.json({
+            ok: true,
+            action,
+            job: job ?? null,
           });
         }
 

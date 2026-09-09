@@ -222,8 +222,12 @@ try {
         $requiredWatchMarkers = @(
             '127.0.0.1',
             '[switch]$AllowRemote',
-            '-Method Get',
-            'Remote Supabase access is blocked'
+            'Remote Supabase access is blocked',
+            'functions/v1/vyra-controller',
+            'VYRA_CONTROLLER_SECRET',
+            'action = "job_status"',
+            'gyqldlwromvmldxyhoip.supabase.co',
+            '$uri.Scheme -ne "https"'
         )
 
         $missingWatchMarkers = @(
@@ -233,9 +237,11 @@ try {
             }
         )
 
+        # POST is allowed only for the fixed read-only controller action above.
+        # Direct mutating verbs remain forbidden in the watcher.
         $unsafeWatchMethod = (
             $watchText -match
-            '(?i)-Method\s+(Post|Put|Patch|Delete)'
+            '(?i)-Method\s+(Put|Patch|Delete)'
         )
 
         if ($watchParseErrors.Count -gt 0) {
@@ -262,7 +268,7 @@ try {
             Add-Result `
                 "PASS" `
                 "Job watcher" `
-                "Local-first read-only watcher detected"
+                "Local-first watcher with protected remote status access detected"
         }
     }
     else {

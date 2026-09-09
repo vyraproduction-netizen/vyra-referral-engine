@@ -38,45 +38,86 @@ if (-not $isLocalHost -and -not $AllowRemote) {
     )
 }
 
-$baseUrl = $SupabaseUrl.TrimEnd("/")
-$escapedJobId = [System.Uri]::EscapeDataString($JobId)
-$select = @(
-    "id",
-    "agent",
-    "task_type",
-    "status",
-    "attempts",
-    "max_attempts",
-    "next_run_at",
-    "error_message",
-    "started_at",
-    "completed_at"
-) -join ","
-
-$endpoint = (
-    "$baseUrl/rest/v1/jobs" +
-    "?id=eq.$escapedJobId" +
-    "&select=$select"
-)
-
-$headers = @{
-    "Accept-Profile" = "public"
-}
-
-$publishableKey = $env:SUPABASE_PUBLISHABLE_KEY
-if (-not $publishableKey) {
-    $publishableKey = $env:SUPABASE_ANON_KEY
-}
-
-if ($publishableKey) {
-    $headers["apikey"] = $publishableKey
-    $headers["Authorization"] = "Bearer $publishableKey"
-}
-elseif (-not $isLocalHost) {
-    throw (
-        "SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY " +
-        "is required for remote read-only access."
+if (-not $isLocalHost) {
+    $trustedRemoteHosts = @(
+        "gyqldlwromvmldxyhoip.supabase.co"
     )
+
+    if ($uri.Scheme -ne "https" -or $uri.Host -notin $trustedRemoteHosts) {
+        throw (
+            "Remote job watching is allowed only for the configured " +
+            "HTTPS Supabase production host."
+        )
+    }
+}
+
+$baseUrl = $SupabaseUrl.TrimEnd("/")
+$method = "Get"
+$requestBody = $null
+
+if ($isLocalHost) {
+    $escapedJobId = [System.Uri]::EscapeDataString($JobId)
+    $select = @(
+        "id",
+        "agent",
+        "task_type",
+        "status",
+        "attempts",
+        "max_attempts",
+        "next_run_at",
+        "error_message",
+        "started_at",
+        "completed_at"
+    ) -join ","
+
+    $endpoint = (
+        "$baseUrl/rest/v1/jobs" +
+        "?id=eq.$escapedJobId" +
+        "&select=$select"
+    )
+    $headers = @{ "Accept-Profile" = "public" }
+
+    $publishableKey = $env:SUPABASE_PUBLISHABLE_KEY
+    if (-not $publishableKey) {
+        $publishableKey = $env:SUPABASE_ANON_KEY
+    }
+    if ($publishableKey) {
+        $headers["apikey"] = $publishableKey
+        $headers["Authorization"] = "Bearer $publishableKey"
+    }
+}
+else {
+    $controllerSecret = $env:VYRA_CONTROLLER_SECRET
+    if (-not $controllerSecret) {
+        $secureSecret = Read-Host `
+            "Enter VYRA_CONTROLLER_SECRET for the remote status request" `
+            -AsSecureString
+        $secretPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR(
+            $secureSecret
+        )
+        try {
+            $controllerSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
+                $secretPointer
+            )
+        }
+        finally {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($secretPointer)
+        }
+    }
+    if (-not $controllerSecret) {
+        throw "VYRA_CONTROLLER_SECRET is required for remote job watching."
+    }
+
+    $endpoint = "$baseUrl/functions/v1/vyra-controller"
+    $headers = @{
+        apikey = $controllerSecret
+        "Content-Type" = "application/json"
+    }
+    $method = "Post"
+    $requestBody = @{
+        action = "job_status"
+        job_id = $JobId
+    } | ConvertTo-Json -Compress
 }
 
 Write-Host "=== VYRA job watch ===" -ForegroundColor Cyan
@@ -89,12 +130,25 @@ $readErrors = 0
 
 for ($i = 1; $i -le $Iterations; $i++) {
     try {
-        $rows = Invoke-RestMethod `
-            -Uri $endpoint `
-            -Headers $headers `
-            -Method Get
-
-        $row = $rows | Select-Object -First 1
+        if ($isLocalHost) {
+            $rows = Invoke-RestMethod `
+                -Uri $endpoint `
+                -Headers $headers `
+                -Method $method
+            $row = $rows | Select-Object -First 1
+        }
+        else {
+            $response = Invoke-RestMethod `
+                -Uri $endpoint `
+                -Headers $headers `
+                -Method $method `
+                -ContentType "application/json" `
+                -Body $requestBody
+            if (-not $response.ok) {
+                throw "Remote controller returned ok=false"
+            }
+            $row = $response.job
+        }
 
         if (-not $row) {
             Write-Host (
