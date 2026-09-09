@@ -21,12 +21,21 @@ export type ContentGenerationInput = {
   }>;
 };
 
+export type ProviderUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cached_input_tokens?: number;
+  reasoning_tokens?: number;
+};
+
 export type GeneratedContent = {
   title: string;
   body: string;
   excerpt: string;
   meta_title: string;
   meta_description: string;
+  usage?: ProviderUsage;
 };
 
 export type ContentProvider = (

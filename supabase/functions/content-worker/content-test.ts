@@ -126,6 +126,44 @@ Deno.test(
 );
 
 Deno.test(
+  "content worker persists provider usage in draft evidence",
+  async () => {
+    const job = createJob();
+    assertContentJob(job);
+
+    const draft = await runContent(job, async () => ({
+      title: "Usage test",
+      body: "Usage test body",
+      excerpt: "Usage test excerpt",
+      meta_title: "Usage test title",
+      meta_description: "Usage test description",
+      usage: {
+        input_tokens: 123,
+        output_tokens: 45,
+        total_tokens: 168,
+        cached_input_tokens: 10,
+      },
+    }));
+
+    const usage = draft.evidence.generation_usage as {
+      input_tokens?: unknown;
+      output_tokens?: unknown;
+      total_tokens?: unknown;
+      cached_input_tokens?: unknown;
+    } | undefined;
+
+    if (
+      usage?.input_tokens !== 123 ||
+      usage.output_tokens !== 45 ||
+      usage.total_tokens !== 168 ||
+      usage.cached_input_tokens !== 10
+    ) {
+      throw new Error("Provider usage was not persisted in draft evidence");
+    }
+  },
+);
+
+Deno.test(
   "content contract rejects a wrong agent",
   () => {
     const job = createJob();

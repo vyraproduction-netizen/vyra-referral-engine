@@ -166,6 +166,9 @@ export async function runContent(
       recommendation: job.payload.recommendation,
       research: job.payload.research,
       scores: job.payload.evidence,
+      ...(generated.usage
+        ? { generation_usage: generated.usage }
+        : {}),
       ...(topicExpansion
         ? { topic_expansion: topicExpansion }
         : {}),

@@ -2,6 +2,7 @@ import type {
   ContentGenerationInput,
   ContentProvider,
   GeneratedContent,
+  ProviderUsage,
 } from "./content-provider.ts";
 
 type OpenAIContentProviderOptions = {
@@ -13,6 +14,15 @@ type OpenAIContentProviderOptions = {
 
 const minimumOutputTokens = 512;
 const maximumOutputTokens = 2_048;
+const maximumCandidateTitleCharacters = 300;
+const maximumUrlCharacters = 2_000;
+const maximumLanguageCharacters = 32;
+const maximumRegionCharacters = 64;
+const maximumTopicSeedCharacters = 300;
+const maximumRecommendationCharacters = 300;
+const maximumResearchAnswerCharacters = 4_000;
+const maximumResearchSourceTitleCharacters = 300;
+const maximumResearchSourceContentCharacters = 4_000;
 
 const contentSchema = {
   type: "object",
@@ -68,16 +78,14 @@ function requireOutputTokenLimit(
 }
 
 function truncate(value: string, maximum: number): string {
-  return value.length <= maximum
-    ? value
-    : `${value.slice(0, maximum)}…`;
+  return value.slice(0, maximum);
 }
 
 function buildPrompt(input: ContentGenerationInput): string {
   const researchSources = input.research_sources.slice(0, 5).map((source) => ({
-    title: truncate(source.title, 300),
-    url: source.url,
-    content: truncate(source.content, 4_000),
+    title: truncate(source.title, maximumResearchSourceTitleCharacters),
+    url: truncate(source.url, maximumUrlCharacters),
+    content: truncate(source.content, maximumResearchSourceContentCharacters),
     ...(typeof source.score === "number" ? { score: source.score } : {}),
   }));
 
@@ -90,12 +98,20 @@ function buildPrompt(input: ContentGenerationInput): string {
     "Keep the article body concise: 300 to 400 words.",
     "Input:",
     JSON.stringify({
-      candidate: { title: input.title, url: input.url },
-      language: input.language,
-      region: input.region,
-      topic_seed: input.topic_seed,
-      recommendation: input.recommendation,
-      research_answer: input.research_answer,
+      candidate: {
+        title: truncate(input.title, maximumCandidateTitleCharacters),
+        url: truncate(input.url, maximumUrlCharacters),
+      },
+      language: truncate(input.language, maximumLanguageCharacters),
+      region: truncate(input.region, maximumRegionCharacters),
+      topic_seed: truncate(input.topic_seed, maximumTopicSeedCharacters),
+      recommendation: truncate(
+        input.recommendation,
+        maximumRecommendationCharacters,
+      ),
+      research_answer: input.research_answer
+        ? truncate(input.research_answer, maximumResearchAnswerCharacters)
+        : null,
       research_sources: researchSources,
     }),
   ].join("\n");
@@ -172,6 +188,64 @@ function extractOutputText(value: unknown): string {
   return text;
 }
 
+function readTokenCount(value: unknown): number | undefined {
+  return typeof value === "number" &&
+      Number.isSafeInteger(value) &&
+      value >= 0
+    ? value
+    : undefined;
+}
+
+function extractUsage(value: unknown): ProviderUsage | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const usage = (value as { usage?: unknown }).usage;
+
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) {
+    return undefined;
+  }
+
+  const record = usage as {
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+    total_tokens?: unknown;
+    input_tokens_details?: { cached_tokens?: unknown };
+    output_tokens_details?: { reasoning_tokens?: unknown };
+  };
+  const inputTokens = readTokenCount(record.input_tokens);
+  const outputTokens = readTokenCount(record.output_tokens);
+  const totalTokens = readTokenCount(record.total_tokens);
+
+  if (
+    inputTokens === undefined ||
+    outputTokens === undefined ||
+    totalTokens === undefined
+  ) {
+    return undefined;
+  }
+
+  const cachedInputTokens = readTokenCount(
+    record.input_tokens_details?.cached_tokens,
+  );
+  const reasoningTokens = readTokenCount(
+    record.output_tokens_details?.reasoning_tokens,
+  );
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+    ...(cachedInputTokens === undefined
+      ? {}
+      : { cached_input_tokens: cachedInputTokens }),
+    ...(reasoningTokens === undefined
+      ? {}
+      : { reasoning_tokens: reasoningTokens }),
+  };
+}
+
 export function createOpenAIContentProvider(
   options: OpenAIContentProviderOptions = {},
 ): ContentProvider {
@@ -235,6 +309,12 @@ export function createOpenAIContentProvider(
       throw new Error("OpenAI returned non-JSON structured output");
     }
 
-    return parseGeneratedContent(parsed);
+    const generated = parseGeneratedContent(parsed);
+    const usage = extractUsage(responseBody);
+
+    return {
+      ...generated,
+      ...(usage ? { usage } : {}),
+    };
   };
 }
