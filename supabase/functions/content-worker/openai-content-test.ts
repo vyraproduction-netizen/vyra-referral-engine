@@ -34,6 +34,7 @@ Deno.test("OpenAI content provider requests strict structured output", async () 
   const provider = createOpenAIContentProvider({
     apiKey: "test-key",
     model: "test-model",
+    maxOutputTokens: 1_200,
     fetchImpl: async (_input, init) => {
       requestBody = JSON.parse(String(init?.body));
       return Response.json({
@@ -61,12 +62,17 @@ Deno.test("OpenAI content provider requests strict structured output", async () 
   ) {
     throw new Error("OpenAI request did not require strict JSON Schema output");
   }
+
+  if (requestBody?.max_output_tokens !== 1_200) {
+    throw new Error("OpenAI request did not enforce the configured output token limit");
+  }
 });
 
 Deno.test("OpenAI content provider rejects incomplete model output", async () => {
   const provider = createOpenAIContentProvider({
     apiKey: "test-key",
     model: "test-model",
+    maxOutputTokens: 1_200,
     fetchImpl: async () => Response.json({
       output: [{
         type: "message",
@@ -94,4 +100,21 @@ Deno.test("OpenAI content provider requires an explicit model", () => {
   }
 
   throw new Error("Missing explicit model was accepted");
+});
+
+Deno.test("OpenAI content provider requires a bounded output token limit", () => {
+  for (const maxOutputTokens of [undefined, 511, 2_049, "not-a-number"]) {
+    try {
+      createOpenAIContentProvider({
+        apiKey: "test-key",
+        model: "test-model",
+        maxOutputTokens,
+      });
+    } catch (error) {
+      if (String(error).includes("OPENAI_CONTENT_MAX_OUTPUT_TOKENS")) continue;
+      throw error;
+    }
+
+    throw new Error(`Invalid output token limit was accepted: ${maxOutputTokens}`);
+  }
 });
