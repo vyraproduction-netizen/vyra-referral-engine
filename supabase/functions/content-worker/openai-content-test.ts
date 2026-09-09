@@ -52,9 +52,14 @@ Deno.test("OpenAI content provider requests strict structured output", async () 
     throw new Error("Structured content body was not returned");
   }
 
-  const text = requestBody?.text as {
-    format?: { type?: string; strict?: boolean; schema?: unknown };
+  const request = requestBody as {
+    reasoning?: { effort?: string };
+    text?: {
+      verbosity?: string;
+      format?: { type?: string; strict?: boolean; schema?: unknown };
+    };
   } | undefined;
+  const text = request?.text;
   if (
     text?.format?.type !== "json_schema" ||
     text.format.strict !== true ||
@@ -65,6 +70,14 @@ Deno.test("OpenAI content provider requests strict structured output", async () 
 
   if (requestBody?.max_output_tokens !== 1_200) {
     throw new Error("OpenAI request did not enforce the configured output token limit");
+  }
+
+  if (request?.reasoning?.effort !== "minimal") {
+    throw new Error("OpenAI request did not minimize reasoning effort");
+  }
+
+  if (text?.verbosity !== "low") {
+    throw new Error("OpenAI request did not request low verbosity");
   }
 });
 
