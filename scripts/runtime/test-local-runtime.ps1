@@ -426,6 +426,44 @@ if ($scoutJobStatus.job.PSObject.Properties.Name -contains "payload" -or
 }
 Write-Pass "Controller job_status returns only safe status fields"
 
+$schedulerPreview = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+    -Headers @{ apikey = $controllerSecret } `
+    -ContentType "application/json" `
+    -Body '{"action":"scheduler_preview"}'
+
+if (-not $schedulerPreview.ok -or
+    $schedulerPreview.action -ne "scheduler_preview" -or
+    -not $schedulerPreview.dry_run -or
+    $schedulerPreview.external_calls -ne 0) {
+    throw "Controller scheduler_preview returned an invalid dry-run response"
+}
+
+$previewedScoutJob = @(
+    $schedulerPreview.planned_jobs |
+        Where-Object { $_.id -eq $scoutJobId }
+) | Select-Object -First 1
+
+if (-not $previewedScoutJob -or $previewedScoutJob.status -ne "queued") {
+    throw "Controller scheduler_preview did not include the queued Scout job"
+}
+
+if ($previewedScoutJob.PSObject.Properties.Name -contains "payload" -or
+    $previewedScoutJob.PSObject.Properties.Name -contains "result" -or
+    $previewedScoutJob.PSObject.Properties.Name -contains "error_message") {
+    throw "Controller scheduler_preview returned non-plan job data"
+}
+
+$previewJobStatus = [string](
+    @(Invoke-LocalSql -Sql "select status from public.jobs where id = '$scoutJobId'::uuid") |
+        Select-Object -Last 1
+)
+if ($previewJobStatus.Trim() -ne "queued") {
+    throw "Controller scheduler_preview changed the Scout job status"
+}
+Write-Pass "Controller scheduler_preview is read-only and cost-free"
+
 try {
     $scoutResponse = Invoke-RestMethod `
         -Method Post `

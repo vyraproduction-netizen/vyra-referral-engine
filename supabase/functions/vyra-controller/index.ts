@@ -38,9 +38,11 @@ type ControllerDatabase = {
           agent: string;
           task_type: string;
           status: string;
+          priority: number;
           attempts: number;
           max_attempts: number;
           next_run_at: string | null;
+          created_at: string;
           started_at: string | null;
           completed_at: string | null;
         };
@@ -136,6 +138,7 @@ const allowedActions = [
   "retry",
   "health",
   "job_status",
+  "scheduler_preview",
   "dispatch",
   "activate_program",
   "record_analytics_event",
@@ -314,6 +317,34 @@ export default {
             ok: true,
             action,
             job: job ?? null,
+          });
+        }
+
+        if (action === "scheduler_preview") {
+          const { data: plannedJobs, error } = await controllerAdmin
+            .from("jobs")
+            .select(
+              "id, agent, task_type, status, priority, attempts, max_attempts, next_run_at, created_at",
+            )
+            .eq("status", "queued")
+            .order("priority", { ascending: false })
+            .order("created_at", { ascending: true })
+            .limit(25);
+
+          if (error) {
+            return Response.json(
+              { ok: false, action, error: error.message },
+              { status: 500 },
+            );
+          }
+
+          return Response.json({
+            ok: true,
+            action,
+            dry_run: true,
+            external_calls: 0,
+            planned_count: plannedJobs?.length ?? 0,
+            planned_jobs: plannedJobs ?? [],
           });
         }
 
