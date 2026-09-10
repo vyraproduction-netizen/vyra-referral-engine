@@ -50,6 +50,21 @@ type ControllerDatabase = {
         Update: Record<string, unknown>;
         Relationships: [];
       };
+      vyra_cost_observations: {
+        Row: {
+          provider: string;
+          operation: string;
+          input_tokens: number | null;
+          output_tokens: number | null;
+          total_tokens: number | null;
+          estimated_eur_micros: number | null;
+          actual_eur_micros: number | null;
+          observed_at: string;
+        };
+        Insert: Record<string, unknown>;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
       analytics_events: {
         Row: {
           id: string;
@@ -96,6 +111,19 @@ type ControllerDatabase = {
         };
         Returns: unknown;
       };
+      get_vyra_cost_budget_status: {
+        Args: {
+          p_day?: string;
+        };
+        Returns: {
+          currency: string;
+          mode: string;
+          daily_limit_eur_micros: number;
+          observed_calls: number;
+          estimated_eur_micros: number;
+          actual_eur_micros: number;
+        }[];
+      };
       activate_program: {
         Args: {
           p_program_id: string;
@@ -139,6 +167,7 @@ const allowedActions = [
   "health",
   "job_status",
   "scheduler_preview",
+  "cost_status",
   "dispatch",
   "activate_program",
   "record_analytics_event",
@@ -345,6 +374,102 @@ export default {
             external_calls: 0,
             planned_count: plannedJobs?.length ?? 0,
             planned_jobs: plannedJobs ?? [],
+          });
+        }
+
+        if (action === "cost_status") {
+          const now = new Date();
+          const dayStart = new Date(Date.UTC(
+            now.getUTCFullYear(),
+            now.getUTCMonth(),
+            now.getUTCDate(),
+          ));
+          const nextDayStart = new Date(dayStart);
+          nextDayStart.setUTCDate(nextDayStart.getUTCDate() + 1);
+
+          const { data: budgetRows, error: budgetError } =
+            await controllerAdmin.rpc("get_vyra_cost_budget_status", {
+              p_day: dayStart.toISOString().slice(0, 10),
+            });
+
+          if (budgetError) {
+            return Response.json(
+              { ok: false, action, error: budgetError.message },
+              { status: 500 },
+            );
+          }
+
+          const { data: observations, error: observationError } =
+            await controllerAdmin
+              .from("vyra_cost_observations")
+              .select(
+                "provider, operation, input_tokens, output_tokens, total_tokens, estimated_eur_micros, actual_eur_micros, observed_at",
+              )
+              .gte("observed_at", dayStart.toISOString())
+              .lt("observed_at", nextDayStart.toISOString());
+
+          if (observationError) {
+            return Response.json(
+              { ok: false, action, error: observationError.message },
+              { status: 500 },
+            );
+          }
+
+          const providerSummary = new Map<string, {
+            provider: string;
+            observations: number;
+            input_tokens: number;
+            output_tokens: number;
+            total_tokens: number;
+          }>();
+          let pricedObservations = 0;
+
+          for (const observation of observations ?? []) {
+            const current = providerSummary.get(observation.provider) ?? {
+              provider: observation.provider,
+              observations: 0,
+              input_tokens: 0,
+              output_tokens: 0,
+              total_tokens: 0,
+            };
+
+            current.observations += 1;
+            current.input_tokens += observation.input_tokens ?? 0;
+            current.output_tokens += observation.output_tokens ?? 0;
+            current.total_tokens += observation.total_tokens ?? 0;
+            providerSummary.set(observation.provider, current);
+
+            if (
+              observation.estimated_eur_micros !== null ||
+              observation.actual_eur_micros !== null
+            ) {
+              pricedObservations += 1;
+            }
+          }
+
+          const budget = budgetRows?.[0] ?? null;
+
+          return Response.json({
+            ok: true,
+            action,
+            read_only: true,
+            external_calls: 0,
+            day_utc: dayStart.toISOString().slice(0, 10),
+            budget: budget
+              ? {
+                currency: budget.currency,
+                mode: budget.mode,
+                daily_limit_eur_micros: budget.daily_limit_eur_micros,
+                observed_calls: budget.observed_calls,
+                estimated_eur_micros: budget.estimated_eur_micros,
+                actual_eur_micros: budget.actual_eur_micros,
+                priced_observations: pricedObservations,
+                pricing_available: pricedObservations > 0,
+              }
+              : null,
+            providers: [...providerSummary.values()].sort((left, right) =>
+              left.provider.localeCompare(right.provider)
+            ),
           });
         }
 

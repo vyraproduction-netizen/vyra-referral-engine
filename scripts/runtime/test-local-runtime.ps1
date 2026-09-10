@@ -502,6 +502,29 @@ if ($previewJobStatus.Trim() -ne "queued") {
 }
 Write-Pass "Controller scheduler_preview is read-only and cost-free"
 
+$costStatus = Invoke-RestMethod `
+    -Method Post `
+    -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+    -Headers @{ apikey = $controllerSecret } `
+    -ContentType "application/json" `
+    -Body '{"action":"cost_status"}'
+
+if (-not $costStatus.ok -or
+    $costStatus.action -ne "cost_status" -or
+    -not $costStatus.read_only -or
+    $costStatus.external_calls -ne 0 -or
+    -not $costStatus.budget -or
+    $costStatus.budget.currency -ne "EUR" -or
+    $costStatus.budget.mode -ne "observe" -or
+    $costStatus.budget.daily_limit_eur_micros -ne 450000 -or
+    $costStatus.budget.pricing_available -ne $false -or
+    $costStatus.budget.priced_observations -ne 0 -or
+    -not ($costStatus.providers -is [System.Array])) {
+    throw "Controller cost_status returned an invalid observe-only response"
+}
+
+Write-Pass "Controller cost_status is read-only and exposes the EUR observe baseline"
+
 try {
     $scoutResponse = Invoke-RestMethod `
         -Method Post `
