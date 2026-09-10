@@ -140,19 +140,57 @@ $topicScoutWorkerHeaders = @{ "x-vyra-worker-secret" = $topicScoutWorkerSecret }
 
 $requestId = [guid]::NewGuid().Guid
 $jobId = [guid]::NewGuid().Guid
+$topicScoutPayload = @{
+    request_id = $requestId
+    language = "ru"
+    region = "EU"
+    topic_seed = "image enhancement"
+    constraints = @{
+        max_topics = 3
+        min_score = 0.7
+    }
+}
+
+$payloadJson = $topicScoutPayload | ConvertTo-Json -Depth 8
+$payloadSql = $payloadJson.Replace("'", "''")
+$createJobSql = @"
+insert into public.jobs (
+    id,
+    agent,
+    task_type,
+    status,
+    priority,
+    attempts,
+    max_attempts,
+    payload
+)
+values (
+    '$jobId'::uuid,
+    'topic_scout',
+    'topic_scout',
+    'running',
+    1000,
+    0,
+    1,
+    '$payloadSql'::jsonb
+);
+
+select count(*)
+from public.jobs
+where id = '$jobId'::uuid
+  and agent = 'topic_scout'
+  and status = 'running';
+"@
+
+$createdJobOutput = Invoke-LocalSql -Sql $createJobSql
+if ($createdJobOutput[-1].Trim() -ne "1") {
+    throw "Topic Scout runtime test did not create one running job"
+}
+
 $body = @{
     action = "run"
     job_id = $jobId
-    payload = @{
-        request_id = $requestId
-        language = "ru"
-        region = "EU"
-        topic_seed = "image enhancement"
-        constraints = @{
-            max_topics = 3
-            min_score = 0.7
-        }
-    }
+    payload = $topicScoutPayload
 } | ConvertTo-Json -Depth 8
 
 try {

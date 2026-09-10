@@ -25,7 +25,9 @@ import {
 import {
   recordTavilyCostObservation,
 } from "../_shared/vyra/cost-observability.ts";
-
+import {
+  assertTopicScoutLedgerJob,
+} from "./ledger-job-binding.ts";
 const researchProviderType =
   Deno.env.get("RESEARCH_PROVIDER") ?? "mock";
 
@@ -297,6 +299,19 @@ Deno.serve(async (req: Request) => {
     }
 
     const payload = resolvedPayload.payload;
+    const client = createSupabaseAdminClient();
+    const { data: ledgerJob, error: ledgerJobError } = await client
+      .from("jobs")
+      .select("id, agent, status")
+      .eq("id", body.job_id)
+      .maybeSingle();
+
+    if (ledgerJobError) {
+      throw new Error(`Topic Scout job lookup failed: ${ledgerJobError.message}`);
+    }
+
+    assertTopicScoutLedgerJob(ledgerJob, body.job_id);
+
 	const researchResults = await researchProvider.search({
   query: payload.topic_seed,
   language: payload.language,
