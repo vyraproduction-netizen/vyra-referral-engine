@@ -3,6 +3,9 @@ import {
   resolveResearchProviderName,
 } from "./research-provider.ts";
 import {
+  buildTavilySearchRequest,
+} from "./tavily-research.ts";
+import {
   assertResearchJob,
   runResearch,
 } from "./research.ts";
@@ -64,4 +67,17 @@ Deno.test("research worker completes with explicit mock provider", async () => {
   assert(result.research.results_count === 1, "Expected one mock result");
   assert(result.research.answer !== null, "Expected a mock answer");
   assert(result.candidate_url === job.payload.candidate.url, "URL mismatch");
+});
+
+Deno.test("Tavily request sends the API key only as a Bearer header", async () => {
+  const request = buildTavilySearchRequest(
+    "test-tavily-key",
+    "test query",
+  );
+  const body = await request.json() as Record<string, unknown>;
+  assert(
+    request.headers.get("Authorization") === "Bearer test-tavily-key",
+    "Bearer header missing",
+  );
+  assert(body.api_key === undefined, "API key leaked into JSON body");
 });

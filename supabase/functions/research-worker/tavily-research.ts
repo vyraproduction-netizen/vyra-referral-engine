@@ -9,6 +9,28 @@ export type TavilyResearchResult = {
   }>;
 };
 
+export function buildTavilySearchRequest(
+  apiKey: string,
+  query: string,
+): Request {
+  return new Request(
+    "https://api.tavily.com/search",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        search_depth: "advanced",
+        include_answer: true,
+        max_results: 5,
+      }),
+    },
+  );
+}
+
 export async function researchWithTavily(
   query: string,
 ): Promise<TavilyResearchResult> {
@@ -19,20 +41,7 @@ export async function researchWithTavily(
   }
 
   const response = await fetch(
-    "https://api.tavily.com/search",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        api_key: apiKey,
-        query,
-        search_depth: "advanced",
-        include_answer: true,
-        max_results: 5,
-      }),
-    },
+    buildTavilySearchRequest(apiKey, query),
   );
 
   if (!response.ok) {
