@@ -5,6 +5,7 @@ import {
   retryResearchJob,
   saveResearchProgramCandidate,
   saveResearchReferralLink,
+  observeTavilyResearchUsage,
 } from "./db.ts";
 
 import {
@@ -65,6 +66,15 @@ Deno.serve(async (request) => {
       researchProvider,
     );
 
+    const costObservation = researchProviderName === "tavily"
+      ? await observeTavilyResearchUsage(job.id, {
+        search_depth: "advanced",
+        max_results: 5,
+        include_answer: true,
+        results_count: researchResult.research.results_count,
+      })
+      : null;
+
     const program =
       await saveResearchProgramCandidate(
         job,
@@ -86,6 +96,7 @@ Deno.serve(async (request) => {
         ...researchResult,
         program,
         referral_link: referralLink,
+        ...(costObservation ? { cost_observation: costObservation } : {}),
         ...(topicExpansion
           ? { topic_expansion: topicExpansion }
           : {}),

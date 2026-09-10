@@ -19,6 +19,12 @@ import {
 import {
   authorizeWorkerRequest,
 } from "../_shared/vyra/worker-auth.ts";
+import {
+  createSupabaseAdminClient,
+} from "../_shared/vyra/supabase-job-store.ts";
+import {
+  recordTavilyCostObservation,
+} from "../_shared/vyra/cost-observability.ts";
 
 const researchProviderType =
   Deno.env.get("RESEARCH_PROVIDER") ?? "mock";
@@ -40,6 +46,20 @@ function createResearchProvider() {
 }
 
 const researchProvider = createResearchProvider();
+
+async function observeTavilyTopicScoutUsage(jobId: string, metadata: Record<string, unknown>) {
+  try {
+    const client = createSupabaseAdminClient();
+    const recorded = await recordTavilyCostObservation(
+      (args) => client.rpc("record_vyra_cost_observation", args),
+      { jobId, operation: "topic_scout_search", metadata },
+    );
+    return { recorded: true, id: recorded.id, mode: recorded.mode };
+  } catch (error) {
+    console.error("Tavily cost observation failed", error);
+    return { recorded: false, reason: "ledger_unavailable" };
+  }
+}
 type RunRequest = {
   action?: string;
   job_id?: string;
@@ -284,6 +304,17 @@ Deno.serve(async (req: Request) => {
   max_results: payload.constraints?.max_topics ?? 10,
 });
 
+const costObservation = researchProviderType === "tavily"
+  ? await observeTavilyTopicScoutUsage(body.job_id, {
+    search_depth: "basic",
+    requested_max_results: payload.constraints?.max_topics ?? 10,
+    max_results_cap: 20,
+    include_answer: false,
+    include_raw_content: false,
+    results_count: researchResults.length,
+  })
+  : null;
+
 const normalizedResearch = normalizeResearch(researchResults);
 
 const scoredResearch = scoreResearch(
@@ -385,6 +416,7 @@ result: {
 	scoring: "heuristic_v1",
 	opportunity_selection: "top3_domain_diverse_v1",
 	scout_decision: "referral_first_v1",
+    ...(costObservation ? { cost_observation: costObservation } : {}),
   },
 },
     });

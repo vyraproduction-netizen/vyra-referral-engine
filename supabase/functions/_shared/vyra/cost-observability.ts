@@ -58,3 +58,42 @@ export async function recordOpenAICostObservation(
 
   return { id: row.id, mode: row.mode };
 }
+
+export type TavilyCostObservation = {
+  jobId: string;
+  operation: "research_worker_search" | "topic_scout_search";
+  metadata: Record<string, unknown>;
+};
+
+export function buildTavilyCostObservationArgs(
+  observation: TavilyCostObservation,
+): Record<string, unknown> {
+  return {
+    p_job_id: observation.jobId,
+    p_provider: "tavily",
+    p_operation: observation.operation,
+    p_input_tokens: null,
+    p_output_tokens: null,
+    p_total_tokens: null,
+    p_estimated_eur_micros: null,
+    p_actual_eur_micros: null,
+    p_pricing_version: null,
+    p_metadata: observation.metadata,
+  };
+}
+
+export async function recordTavilyCostObservation(
+  callRpc: CostObservationRpc,
+  observation: TavilyCostObservation,
+): Promise<RecordedCostObservation> {
+  const { data, error } = await callRpc(buildTavilyCostObservationArgs(observation));
+  if (error) throw new Error("Cost observation failed: " + error.message);
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Cost observation returned an invalid response");
+  }
+  const row = data as { id?: unknown; mode?: unknown };
+  if (typeof row.id !== "string" || (row.mode !== "observe" && row.mode !== "enforce")) {
+    throw new Error("Cost observation returned incomplete fields");
+  }
+  return { id: row.id, mode: row.mode };
+}

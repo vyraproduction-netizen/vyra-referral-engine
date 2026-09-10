@@ -3,6 +3,9 @@ import {
   createSupabaseJobStore,
 } from "../_shared/vyra/supabase-job-store.ts";
 import {
+  recordTavilyCostObservation,
+} from "../_shared/vyra/cost-observability.ts";
+import {
   enqueueContentJob,
 } from "./content-job.ts";
 import {
@@ -194,4 +197,18 @@ export async function retryResearchJob(
     jobId,
     rpcResult: null,
   };
+}
+
+export async function observeTavilyResearchUsage(jobId: string, metadata: Record<string, unknown>) {
+  try {
+    const client = createSupabaseAdminClient();
+    const recorded = await recordTavilyCostObservation(
+      (args) => client.rpc("record_vyra_cost_observation", args),
+      { jobId, operation: "research_worker_search", metadata },
+    );
+    return { recorded: true, id: recorded.id, mode: recorded.mode };
+  } catch (error) {
+    console.error("Tavily cost observation failed", error);
+    return { recorded: false, reason: "ledger_unavailable" };
+  }
 }
