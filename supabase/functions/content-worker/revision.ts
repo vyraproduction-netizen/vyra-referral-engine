@@ -1,6 +1,7 @@
 import type {
   VyraJob,
 } from "../_shared/vyra/job-store.ts";
+import type { ProviderUsage } from "./content-provider.ts";
 import type {
   ContentRevisionJobPayload,
 } from "../repeat-worker/content-revision.ts";
@@ -34,6 +35,7 @@ export type GeneratedRevision = {
   excerpt: string;
   meta_title: string;
   meta_description: string;
+  usage?: ProviderUsage;
 };
 
 export type ContentRevisionDraft = {
@@ -311,6 +313,7 @@ export function buildContentRevisionDraft(
           ...job.payload.safeguards,
         },
       },
+      ...(generated.usage ? { generation_usage: generated.usage } : {}),
     },
     program_id: source.program_id as string,
     referral_link_id:

@@ -2,6 +2,10 @@ import {
   createSupabaseAdminClient,
   createSupabaseJobStore,
 } from "../_shared/vyra/supabase-job-store.ts";
+import {
+  recordOpenAICostObservation,
+} from "../_shared/vyra/cost-observability.ts";
+import type { ProviderUsage } from "./content-provider.ts";
 import type {
   ContentDraft,
   ContentJob,
@@ -192,4 +196,22 @@ export async function retryContentJob(
 ) {
   const store = createSupabaseJobStore();
   await store.retry(jobId, errorMessage);
+}
+
+export async function observeOpenAIContentUsage(
+  jobId: string,
+  operation: string,
+  usage: ProviderUsage | undefined,
+) {
+  try {
+    const client = createSupabaseAdminClient();
+    const recorded = await recordOpenAICostObservation(
+      (args) => client.rpc("record_vyra_cost_observation", args),
+      { jobId, operation, usage },
+    );
+    return { recorded: true, id: recorded.id, mode: recorded.mode };
+  } catch (error) {
+    console.error("OpenAI cost observation was not recorded", error);
+    return { recorded: false, reason: "ledger_unavailable" as const };
+  }
 }

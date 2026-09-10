@@ -6,12 +6,14 @@ import {
   loadContentRevisionSource,
   retryContentJob,
   saveContentDraft,
+  observeOpenAIContentUsage,
   saveContentRevision,
 } from "./db.ts";
 import {
   assertContentJob,
   runContent,
 } from "./content.ts";
+import type { ProviderUsage } from "./content-provider.ts";
 import {
   createContentProvider,
   resolveContentProviderName,
@@ -70,6 +72,13 @@ Deno.serve(async (request) => {
         source,
         contentProvider,
       );
+      const costObservation = contentProviderName === "openai"
+        ? await observeOpenAIContentUsage(
+          job.id,
+          "content_revision",
+          draft.evidence.generation_usage as ProviderUsage | undefined,
+        )
+        : null;
       const revision = await saveContentRevision(
         job,
         draft,
@@ -91,6 +100,7 @@ Deno.serve(async (request) => {
         created: revision.created,
         provider: contentProviderName,
         qa_job_id: qaJob?.id ?? null,
+        cost_observation: costObservation,
       };
 
       await completeContentJob(job.id, result);
@@ -112,6 +122,13 @@ Deno.serve(async (request) => {
       contentProvider,
     );
 
+    const costObservation = contentProviderName === "openai"
+      ? await observeOpenAIContentUsage(
+        job.id,
+        "content_draft",
+        draft.evidence.generation_usage as ProviderUsage | undefined,
+      )
+      : null;
     const content = await saveContentDraft(draft);
 
     const qaJob = await createContentQaJob(
@@ -127,6 +144,7 @@ Deno.serve(async (request) => {
       created: content.created,
       provider: contentProviderName,
       qa_job_id: qaJob?.id ?? null,
+      cost_observation: costObservation,
     };
 
     await completeContentJob(job.id, result);
