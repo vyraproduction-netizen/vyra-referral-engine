@@ -6,6 +6,7 @@ import {
   recordOpenAICostObservation,
 } from "../_shared/vyra/cost-observability.ts";
 import type { ProviderUsage } from "./content-provider.ts";
+import { singleRpcRow } from "./ledger-rpc.ts";
 import type {
   ContentDraft,
   ContentJob,
@@ -206,7 +207,7 @@ export async function observeOpenAIContentUsage(
   try {
     const client = createSupabaseAdminClient();
     const recorded = await recordOpenAICostObservation(
-      (args) => client.rpc("record_vyra_cost_observation_usd", args),
+      (args) => singleRpcRow(client.rpc("record_vyra_cost_observation_usd", args)),
       { jobId, operation, usage, model: Deno.env.get("OPENAI_CONTENT_MODEL")?.trim() },
     );
     return { recorded: true, id: recorded.id, mode: recorded.mode };
