@@ -13,6 +13,9 @@ import {
   resolveWorkerDispatchRoute,
   supportedDispatchAgents,
 } from "./worker-dispatch.ts";
+import {
+  hasRecordedPrice,
+} from "../_shared/vyra/pricing-catalog.ts";
 
 type ControllerJob = {
   id: string;
@@ -59,6 +62,9 @@ type ControllerDatabase = {
           total_tokens: number | null;
           estimated_eur_micros: number | null;
           actual_eur_micros: number | null;
+          estimated_usd_micros: number | null;
+          actual_usd_micros: number | null;
+          pricing_version: string | null;
           observed_at: string;
         };
         Insert: Record<string, unknown>;
@@ -403,7 +409,7 @@ export default {
             await controllerAdmin
               .from("vyra_cost_observations")
               .select(
-                "provider, operation, input_tokens, output_tokens, total_tokens, estimated_eur_micros, actual_eur_micros, observed_at",
+                "provider, operation, input_tokens, output_tokens, total_tokens, estimated_eur_micros, actual_eur_micros, estimated_usd_micros, actual_usd_micros, pricing_version, observed_at",
               )
               .gte("observed_at", dayStart.toISOString())
               .lt("observed_at", nextDayStart.toISOString());
@@ -421,6 +427,9 @@ export default {
             input_tokens: number;
             output_tokens: number;
             total_tokens: number;
+            estimated_usd_micros: number;
+            actual_usd_micros: number;
+            usd_priced_observations: number;
           }>();
           let pricedObservations = 0;
 
@@ -431,12 +440,20 @@ export default {
               input_tokens: 0,
               output_tokens: 0,
               total_tokens: 0,
+              estimated_usd_micros: 0,
+              actual_usd_micros: 0,
+              usd_priced_observations: 0,
             };
 
             current.observations += 1;
             current.input_tokens += observation.input_tokens ?? 0;
             current.output_tokens += observation.output_tokens ?? 0;
             current.total_tokens += observation.total_tokens ?? 0;
+            current.estimated_usd_micros += observation.estimated_usd_micros ?? 0;
+            current.actual_usd_micros += observation.actual_usd_micros ?? 0;
+            if (observation.estimated_usd_micros !== null || observation.actual_usd_micros !== null) {
+              current.usd_priced_observations += 1;
+            }
             providerSummary.set(observation.provider, current);
 
             if (
@@ -448,6 +465,18 @@ export default {
           }
 
           const budget = budgetRows?.[0] ?? null;
+          const estimatedUsdMicros = [...providerSummary.values()].reduce(
+            (sum, provider) => sum + provider.estimated_usd_micros,
+            0,
+          );
+          const actualUsdMicros = [...providerSummary.values()].reduce(
+            (sum, provider) => sum + provider.actual_usd_micros,
+            0,
+          );
+          const usdPricedObservations = [...providerSummary.values()].reduce(
+            (sum, provider) => sum + provider.usd_priced_observations,
+            0,
+          );
 
           return Response.json({
             ok: true,
@@ -463,8 +492,14 @@ export default {
                 observed_calls: budget.observed_calls,
                 estimated_eur_micros: budget.estimated_eur_micros,
                 actual_eur_micros: budget.actual_eur_micros,
+                estimated_usd_micros: estimatedUsdMicros,
+                actual_usd_micros: actualUsdMicros,
+                usd_priced_observations: usdPricedObservations,
                 priced_observations: pricedObservations,
-                pricing_available: pricedObservations > 0,
+                pricing_available: hasRecordedPrice(
+                  pricedObservations,
+                  usdPricedObservations,
+                ),
               }
               : null,
             providers: [...providerSummary.values()].sort((left, right) =>

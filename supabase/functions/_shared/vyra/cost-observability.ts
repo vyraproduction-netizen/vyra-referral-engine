@@ -1,4 +1,8 @@
 import type { ProviderUsage } from "../../content-worker/content-provider.ts";
+import {
+  estimateOpenAIUsageUsd,
+  findVerifiedOpenAIPriceQuote,
+} from "./pricing-catalog.ts";
 
 export type CostObservationRpc = (args: Record<string, unknown>) => PromiseLike<{
   data: unknown;
@@ -9,6 +13,7 @@ export type OpenAICostObservation = {
   jobId: string;
   operation: string;
   usage?: ProviderUsage;
+  model?: string;
 };
 
 export type RecordedCostObservation = {
@@ -19,6 +24,11 @@ export type RecordedCostObservation = {
 export function buildOpenAICostObservationArgs(
   observation: OpenAICostObservation,
 ): Record<string, unknown> {
+  const model = observation.model?.trim() || undefined;
+  const estimate = model
+    ? estimateOpenAIUsageUsd(model, observation.usage, findVerifiedOpenAIPriceQuote(model))
+    : null;
+
   return {
     p_job_id: observation.jobId,
     p_provider: "openai",
@@ -26,12 +36,17 @@ export function buildOpenAICostObservationArgs(
     p_input_tokens: observation.usage?.input_tokens ?? null,
     p_output_tokens: observation.usage?.output_tokens ?? null,
     p_total_tokens: observation.usage?.total_tokens ?? null,
-    p_estimated_eur_micros: null,
-    p_actual_eur_micros: null,
-    p_pricing_version: null,
+    p_estimated_usd_micros: estimate?.total_usd_micros ?? null,
+    p_actual_usd_micros: null,
+    p_pricing_version: estimate?.pricing_version ?? null,
     p_metadata: {
       source: "openai_responses",
       usage_available: Boolean(observation.usage),
+      model: model ?? null,
+      estimate_currency: estimate?.currency ?? null,
+      input_pricing: estimate ? "standard_input_rate" : null,
+      cached_input_tokens: "not_observed",
+      pricing_source_url: estimate?.source_url ?? null,
     },
   };
 }

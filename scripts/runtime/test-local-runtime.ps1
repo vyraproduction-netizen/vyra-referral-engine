@@ -24,6 +24,26 @@ function Invoke-LocalSql {
     return @($output)
 }
 
+function Test-DispatchJobIdentity {
+    param(
+        [object]$ResponseJobId,
+        [Parameter(Mandatory = $true)][string]$ExpectedJobId
+    )
+
+    $reportedJobId = ([string]$ResponseJobId).Trim()
+    if ($reportedJobId) {
+        return $reportedJobId -eq $ExpectedJobId.Trim()
+    }
+
+    # Worker routes may omit job_id while still completing the claimed job.
+    # Fall back only for a missing ID; a non-empty different ID remains a failure.
+    $persistedStatus = [string](
+        @(Invoke-LocalSql -Sql "select status from public.jobs where id = '$ExpectedJobId'::uuid") |
+            Select-Object -Last 1
+    )
+    return $persistedStatus.Trim() -eq "completed"
+}
+
 Write-Host "=== VYRA local runtime test ===" -ForegroundColor Cyan
 Write-Host "ProjectRoot: $ProjectRoot"
 Write-Host "SupabaseUrl: $SupabaseUrl"
@@ -545,25 +565,34 @@ try {
     if (-not $scoutResponse.claimed) {
         throw "Controller Topic Scout dispatch claimed no job"
     }
-    if ($scoutResponse.job_id -ne $scoutJobId) {
-        throw "Controller Topic Scout dispatch claimed an unexpected job"
-    }
-    if ($scoutResponse.completed.status -ne "completed") {
+    # Topic Scout is dispatched to its worker; verify durable queue state rather
+    # than the legacy synchronous controller response shape.
+    $scoutCompletionStatus = [string](
+        @(Invoke-LocalSql -Sql "select status from public.jobs where id = '$scoutJobId'::uuid") |
+            Select-Object -Last 1
+    )
+    if ($scoutCompletionStatus.Trim() -ne "completed") {
         throw "Controller Topic Scout dispatch did not complete the scout job"
     }
 
-    $insertedResearchJobs = @(
-        $scoutResponse.scout.result.inserted_research_jobs
+    $diagnosticResearchJobState = [string](
+        @(Invoke-LocalSql -Sql @"
+select count(*)::text || '|' || coalesce(max(id::text), '')
+from public.jobs
+where agent = 'research'
+  and task_type = 'topic_research'
+  and status = 'queued'
+  and payload->>'request_id' = '$scoutJobId';
+"@) | Select-Object -Last 1
     )
-    if ($insertedResearchJobs.Count -ne 1) {
+    $diagnosticResearchJobParts = $diagnosticResearchJobState.Trim() -split '\|', 2
+    if ($diagnosticResearchJobParts.Count -ne 2 -or
+        $diagnosticResearchJobParts[0] -ne "1" -or
+        -not $diagnosticResearchJobParts[1]) {
         throw "Topic Scout must insert exactly one diagnostic research job"
     }
 
-    $researchJobId = [string]$insertedResearchJobs[0].id
-    if (-not $researchJobId) {
-        throw "Topic Scout returned no research job id"
-    }
-
+    $researchJobId = $diagnosticResearchJobParts[1]
     Write-Pass "Controller Topic Scout dispatch created a research job"
 
     $promoteResearchSql = @"
@@ -615,7 +644,7 @@ where id = '$researchJobId'::uuid;
     if (-not $workerResponse.claimed) {
         throw "Controller research dispatch claimed no job"
     }
-    if ($workerResponse.job_id -ne $researchJobId) {
+    if ((-not (Test-DispatchJobIdentity -ResponseJobId $workerResponse.job_id -ExpectedJobId $researchJobId))) {
         throw "Controller research dispatch claimed an unexpected job"
     }
     if ($workerResponse.provider -ne "mock") {
@@ -749,7 +778,7 @@ order by agent;
     if (-not $contentResponse.claimed) {
         throw "Controller Content dispatch claimed no job"
     }
-    if ($contentResponse.job_id -ne $contentJobId) {
+    if ((-not (Test-DispatchJobIdentity -ResponseJobId $contentResponse.job_id -ExpectedJobId $contentJobId))) {
         throw "Controller Content dispatch claimed an unexpected job"
     }
     if ($contentResponse.provider -ne "mock") {
@@ -839,7 +868,7 @@ where id = '$qaJobId'::uuid;
     if (-not $qaResponse.claimed) {
         throw "Controller QA dispatch claimed no job"
     }
-    if ($qaResponse.job_id -ne $qaJobId) {
+    if ((-not (Test-DispatchJobIdentity -ResponseJobId $qaResponse.job_id -ExpectedJobId $qaJobId))) {
         throw "Controller QA dispatch claimed an unexpected job"
     }
     if ($qaResponse.qa.status -ne "approved") {
@@ -1090,7 +1119,7 @@ where p.id = '$programId'::uuid;
     if (-not $publisherResponse.claimed) {
         throw "Controller Publisher dispatch claimed no job"
     }
-    if ($publisherResponse.job_id -ne $publishJobId) {
+    if ((-not (Test-DispatchJobIdentity -ResponseJobId $publisherResponse.job_id -ExpectedJobId $publishJobId))) {
         throw "Controller Publisher dispatch claimed an unexpected job"
     }
     if ($publisherResponse.provider -ne "mock") {
@@ -1256,8 +1285,7 @@ where id = '$researchJobId'::uuid;
         throw "Duplicate research dispatch returned ok=false"
     }
     if (
-        $duplicateResearchResponse.job_id -ne
-            $duplicateResearchJobId
+        (-not (Test-DispatchJobIdentity -ResponseJobId $duplicateResearchResponse.job_id -ExpectedJobId $duplicateResearchJobId))
     ) {
         throw "Duplicate research dispatch claimed an unexpected job"
     }
@@ -1502,7 +1530,7 @@ try {
     if (-not $analyticsResponse.claimed) {
         throw "Controller Analytics claimed no job"
     }
-    if ($analyticsResponse.job_id -ne $analyticsJobId) {
+    if ((-not (Test-DispatchJobIdentity -ResponseJobId $analyticsResponse.job_id -ExpectedJobId $analyticsJobId))) {
         throw "Controller Analytics claimed an unexpected job"
     }
 
@@ -1743,7 +1771,7 @@ values (
         if (
             -not $response.ok -or
             -not $response.claimed -or
-            $response.job_id -ne $jobId -or
+            (-not (Test-DispatchJobIdentity -ResponseJobId $response.job_id -ExpectedJobId $jobId)) -or
             $response.analytics.content_pairs_processed -ne 2
         ) {
             throw "Content-specific Analytics dispatch failed"
@@ -1814,7 +1842,7 @@ values (
     if (
         -not $staleResponse.ok -or
         -not $staleResponse.claimed -or
-        $staleResponse.job_id -ne $staleJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $staleResponse.job_id -ExpectedJobId $staleJobId)) -or
         $staleResponse.analytics.content_pairs_processed -ne 1
     ) {
         throw "Stale content-specific Analytics dispatch failed"
@@ -2120,7 +2148,7 @@ try {
     if (
         -not $attributionResponse.ok -or
         -not $attributionResponse.claimed -or
-        $attributionResponse.job_id -ne $attributionJobId
+        (-not (Test-DispatchJobIdentity -ResponseJobId $attributionResponse.job_id -ExpectedJobId $attributionJobId))
     ) {
         throw "Controller did not dispatch attributed analytics"
     }
@@ -2506,7 +2534,7 @@ values (
     if (
         -not $optimizerAnalyticsResponse.ok -or
         -not $optimizerAnalyticsResponse.claimed -or
-        $optimizerAnalyticsResponse.job_id -ne $optimizerAnalyticsJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $optimizerAnalyticsResponse.job_id -ExpectedJobId $optimizerAnalyticsJobId)) -or
         $optimizerAnalyticsResponse.analytics.content_pairs_processed -ne 5
     ) {
         throw "Analytics did not prepare stored Optimizer metrics"
@@ -2576,7 +2604,7 @@ where content_id in ($optimizerContentIdList);
         -not $optimizerResponse.ok -or
         -not $optimizerResponse.claimed -or
         $optimizerResponse.agent -ne "optimizer" -or
-        $optimizerResponse.job_id -ne $optimizerJobId
+        (-not (Test-DispatchJobIdentity -ResponseJobId $optimizerResponse.job_id -ExpectedJobId $optimizerJobId))
     ) {
         throw "Controller did not dispatch the expected Optimizer job"
     }
@@ -2884,7 +2912,7 @@ where id = '$($improveRepeatResponse.job_id)'::uuid;
         -not $repeatReuseResponse.ok -or
         -not $repeatReuseResponse.claimed -or
         $repeatReuseResponse.agent -ne "repeat" -or
-        $repeatReuseResponse.job_id -ne $repeatReuseJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $repeatReuseResponse.job_id -ExpectedJobId $repeatReuseJobId)) -or
         $repeatReuseResponse.repeat.downstream.execution -ne
             "content_revision" -or
         $repeatReuseResponse.repeat.downstream.content_revision.created -or
@@ -2924,7 +2952,7 @@ where id = '$($scaleRepeatResponse.job_id)'::uuid;
         -not $repeatScaleReuseResponse.ok -or
         -not $repeatScaleReuseResponse.claimed -or
         $repeatScaleReuseResponse.agent -ne "repeat" -or
-        $repeatScaleReuseResponse.job_id -ne $repeatScaleReuseJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $repeatScaleReuseResponse.job_id -ExpectedJobId $repeatScaleReuseJobId)) -or
         $repeatScaleReuseResponse.repeat.downstream.execution -ne
             "topic_expansion" -or
         $repeatScaleReuseResponse.repeat.downstream.topic_expansion.created -or
@@ -3038,7 +3066,7 @@ where id = '$($optimizerContentIds[1])'::uuid;
         -not $topicExpansionResponse.ok -or
         -not $topicExpansionResponse.claimed -or
         $topicExpansionResponse.agent -ne "topic_scout" -or
-        $topicExpansionResponse.job_id -ne $topicExpansionJobId
+        (-not (Test-DispatchJobIdentity -ResponseJobId $topicExpansionResponse.job_id -ExpectedJobId $topicExpansionJobId))
     ) {
         throw "Controller did not dispatch the expected Topic Expansion job"
     }
@@ -3343,7 +3371,7 @@ where id = '$expandedContentJobId'::uuid;
         -not $expandedContentResponse.ok -or
         -not $expandedContentResponse.claimed -or
         $expandedContentResponse.agent -ne "content" -or
-        $expandedContentResponse.job_id -ne $expandedContentJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $expandedContentResponse.job_id -ExpectedJobId $expandedContentJobId)) -or
         -not $expandedContentResponse.content.created -or
         -not $expandedContentResponse.qa_job.id
     ) {
@@ -3504,7 +3532,7 @@ where id = '$expandedQaJobId'::uuid;
         -not $expandedQaResponse.ok -or
         -not $expandedQaResponse.claimed -or
         $expandedQaResponse.agent -ne "qa" -or
-        $expandedQaResponse.job_id -ne $expandedQaJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $expandedQaResponse.job_id -ExpectedJobId $expandedQaJobId)) -or
         $expandedQaResponse.qa.status -ne "approved" -or
         -not $expandedQaResponse.publish_job.id
     ) {
@@ -3619,7 +3647,7 @@ where id = '$expandedPublishJobId'::uuid;
         -not $expandedPublisherResponse.ok -or
         -not $expandedPublisherResponse.claimed -or
         $expandedPublisherResponse.agent -ne "publisher" -or
-        $expandedPublisherResponse.job_id -ne $expandedPublishJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $expandedPublisherResponse.job_id -ExpectedJobId $expandedPublishJobId)) -or
         $expandedPublisherResponse.reused -or
         $expandedPublisherResponse.publication.content_id -ne
             $expandedDraftId -or
@@ -3744,8 +3772,7 @@ where id = '$expandedReusePublishJobId'::uuid
         -not $expandedReusePublisherResponse.ok -or
         -not $expandedReusePublisherResponse.claimed -or
         $expandedReusePublisherResponse.agent -ne "publisher" -or
-        $expandedReusePublisherResponse.job_id -ne
-            $expandedReusePublishJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $expandedReusePublisherResponse.job_id -ExpectedJobId $expandedReusePublishJobId)) -or
         -not $expandedReusePublisherResponse.reused -or
         $expandedReusePublisherResponse.provider -ne "stored" -or
         $expandedReuseLineage.source_repeat_job_id -ne
@@ -3996,7 +4023,7 @@ values (
     if (
         -not $contentRevisionFirst.ok -or
         -not $contentRevisionFirst.claimed -or
-        $contentRevisionFirst.job_id -ne $contentRevisionJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $contentRevisionFirst.job_id -ExpectedJobId $contentRevisionJobId)) -or
         -not $contentRevisionFirst.revision.created -or
         $contentRevisionFirst.revision.revision_number -ne 1 -or
         $contentRevisionFirst.revision.source_content_id -ne
@@ -4029,7 +4056,7 @@ where id = '$contentRevisionJobId'::uuid;
     if (
         -not $contentRevisionSecond.ok -or
         -not $contentRevisionSecond.claimed -or
-        $contentRevisionSecond.job_id -ne $contentRevisionJobId -or
+        (-not (Test-DispatchJobIdentity -ResponseJobId $contentRevisionSecond.job_id -ExpectedJobId $contentRevisionJobId)) -or
         $contentRevisionSecond.revision.created -or
         $contentRevisionSecond.revision.revision_number -ne 1 -or
         $null -ne $contentRevisionSecond.qa_job

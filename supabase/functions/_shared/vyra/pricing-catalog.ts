@@ -82,3 +82,33 @@ export function estimateOpenAIUsageUsd(
     source_url: quote.source_url,
   };
 }
+
+const verifiedOpenAIQuotes: readonly VerifiedOpenAIPriceQuote[] = [
+  {
+    provider: "openai",
+    model: "gpt-5-mini-2025-08-07",
+    currency: "USD",
+    input_usd_micros_per_million_tokens: 250000,
+    output_usd_micros_per_million_tokens: 2000000,
+    pricing_version: "openai-gpt-5-mini-standard-2026-09-10",
+    source_url: "https://developers.openai.com/api/docs/models/gpt-5-mini",
+    verified_at: "2026-09-10T00:00:00.000Z",
+  },
+];
+
+export function findVerifiedOpenAIPriceQuote(
+  model: string,
+): VerifiedOpenAIPriceQuote | undefined {
+  return verifiedOpenAIQuotes.find((quote) => quote.model === model);
+}
+
+export function hasRecordedPrice(
+  eurPricedObservations: number,
+  usdPricedObservations: number,
+): boolean {
+  return Number.isSafeInteger(eurPricedObservations) &&
+      Number.isSafeInteger(usdPricedObservations) &&
+      eurPricedObservations >= 0 &&
+      usdPricedObservations >= 0 &&
+      (eurPricedObservations > 0 || usdPricedObservations > 0);
+}

@@ -206,8 +206,8 @@ export async function observeOpenAIContentUsage(
   try {
     const client = createSupabaseAdminClient();
     const recorded = await recordOpenAICostObservation(
-      (args) => client.rpc("record_vyra_cost_observation", args),
-      { jobId, operation, usage },
+      (args) => client.rpc("record_vyra_cost_observation_usd", args),
+      { jobId, operation, usage, model: Deno.env.get("OPENAI_CONTENT_MODEL")?.trim() },
     );
     return { recorded: true, id: recorded.id, mode: recorded.mode };
   } catch (error) {
