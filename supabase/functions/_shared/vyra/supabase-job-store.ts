@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2.112.4";
 import type {
   CreatedVyraJob,
   JobStore,
@@ -95,7 +95,7 @@ export class SupabaseJobStore implements JobStore {
   }
 }
 
-export function createSupabaseJobStore(): SupabaseJobStore {
+export function createSupabaseAdminClient(): SupabaseClient {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
 
   const supabaseKey =
@@ -112,12 +112,16 @@ export function createSupabaseJobStore(): SupabaseJobStore {
     );
   }
 
-  const client = createClient(supabaseUrl, supabaseKey, {
+  return createClient(supabaseUrl, supabaseKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
     },
   });
+}
 
-  return new SupabaseJobStore(client);
+export function createSupabaseJobStore(): SupabaseJobStore {
+  return new SupabaseJobStore(
+    createSupabaseAdminClient(),
+  );
 }

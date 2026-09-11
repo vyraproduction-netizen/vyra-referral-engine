@@ -11,7 +11,23 @@ import { prepareJobInsert } from "./db-writer.ts";
 import { createSupabaseJobChecker } from "./supabase-job-checker.ts";
 import { filterNewResearchJobs } from "./job-dedupe.ts";
 import { insertResearchJobs } from "./job-inserter.ts";
-
+import { resolveTopicScoutPayload } from "./run-payload.ts";
+import { createTopicExpansionSourceLoader } from "./topic-expansion-source.ts";
+import {
+  attachTopicExpansionLineageToJobs,
+} from "./expanded-topic-research.ts";
+import {
+  authorizeWorkerRequest,
+} from "../_shared/vyra/worker-auth.ts";
+import {
+  createSupabaseAdminClient,
+} from "../_shared/vyra/supabase-job-store.ts";
+import {
+  recordTavilyCostObservation,
+} from "../_shared/vyra/cost-observability.ts";
+import {
+  assertTopicScoutLedgerJob,
+} from "./ledger-job-binding.ts";
 const researchProviderType =
   Deno.env.get("RESEARCH_PROVIDER") ?? "mock";
 
@@ -32,21 +48,24 @@ function createResearchProvider() {
 }
 
 const researchProvider = createResearchProvider();
-type TopicScoutPayload = {
-  request_id: string;
-  language: string;
-  region: string;
-  topic_seed: string;
-  constraints?: {
-    max_topics?: number;
-    min_score?: number;
-  };
-};
 
+async function observeTavilyTopicScoutUsage(jobId: string, metadata: Record<string, unknown>) {
+  try {
+    const client = createSupabaseAdminClient();
+    const recorded = await recordTavilyCostObservation(
+      (args) => client.rpc("record_vyra_cost_observation", args),
+      { jobId, operation: "topic_scout_search", metadata },
+    );
+    return { recorded: true, id: recorded.id, mode: recorded.mode };
+  } catch (error) {
+    console.error("Tavily cost observation failed", error);
+    return { recorded: false, reason: "ledger_unavailable" };
+  }
+}
 type RunRequest = {
   action?: string;
   job_id?: string;
-  payload?: TopicScoutPayload;
+  payload?: unknown;
 };
 
 type TopicCandidate = {
@@ -222,36 +241,20 @@ function buildCandidates(seed: string): TopicCandidate[] {
     .sort((a, b) => b.score - a.score);
 }
 
-function isValidPayload(
-  payload: unknown,
-): payload is TopicScoutPayload {
-  if (!payload || typeof payload !== "object") {
-    return false;
+Deno.serve(async (req: Request) => {
+  const authorization = authorizeWorkerRequest(
+    req,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
   }
 
-  const value = payload as Record<string, unknown>;
-
-  return (
-    typeof value.request_id === "string" &&
-    typeof value.language === "string" &&
-    typeof value.region === "string" &&
-    typeof value.topic_seed === "string" &&
-    value.topic_seed.trim().length > 0
-  );
-}
-
-Deno.serve(async (req: Request) => {
   try {
-    if (req.method !== "POST") {
-      return Response.json(
-        {
-          ok: false,
-          error: "POST required",
-        },
-        { status: 405 },
-      );
-    }
-
     const body = (await req.json()) as RunRequest;
 
     if (body.action !== "run") {
@@ -275,29 +278,57 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    if (!isValidPayload(body.payload)) {
+    let resolvedPayload;
+
+    try {
+      resolvedPayload = await resolveTopicScoutPayload(
+        body.payload,
+        async (contentId) =>
+          await createTopicExpansionSourceLoader()(contentId),
+      );
+    } catch (error) {
       return Response.json(
         {
           ok: false,
-          error: "Invalid payload",
-          required: [
-            "request_id",
-            "language",
-            "region",
-            "topic_seed",
-          ],
+          error: error instanceof Error
+            ? error.message
+            : String(error),
         },
         { status: 400 },
       );
     }
 
-    const payload = body.payload;
+    const payload = resolvedPayload.payload;
+    const client = createSupabaseAdminClient();
+    const { data: ledgerJob, error: ledgerJobError } = await client
+      .from("jobs")
+      .select("id, agent, status")
+      .eq("id", body.job_id)
+      .maybeSingle();
+
+    if (ledgerJobError) {
+      throw new Error(`Topic Scout job lookup failed: ${ledgerJobError.message}`);
+    }
+
+    assertTopicScoutLedgerJob(ledgerJob, body.job_id);
+
 	const researchResults = await researchProvider.search({
   query: payload.topic_seed,
   language: payload.language,
   region: payload.region,
   max_results: payload.constraints?.max_topics ?? 10,
 });
+
+const costObservation = researchProviderType === "tavily"
+  ? await observeTavilyTopicScoutUsage(body.job_id, {
+    search_depth: "basic",
+    requested_max_results: payload.constraints?.max_topics ?? 10,
+    max_results_cap: 20,
+    include_answer: false,
+    include_raw_content: false,
+    results_count: researchResults.length,
+  })
+  : null;
 
 const normalizedResearch = normalizeResearch(researchResults);
 
@@ -316,7 +347,7 @@ const scoutOpportunities = buildScoutOpportunities(
   payload.topic_seed,
 );
 
-const researchJobs = scoutOpportunities
+const baseResearchJobs = scoutOpportunities
   .map((opportunity) =>
     buildResearchJob(
       opportunity,
@@ -325,6 +356,11 @@ const researchJobs = scoutOpportunities
       payload.region,
     )
   );
+
+const researchJobs = attachTopicExpansionLineageToJobs(
+  baseResearchJobs,
+  resolvedPayload.expansion,
+);
 
 const preparedResearchJobs = prepareResearchJobs(
   researchJobs,
@@ -372,6 +408,9 @@ const insertedResearchJobs = await insertResearchJobs(
       request_id: payload.request_id,
 result: {
   request_id: payload.request_id,
+  ...(resolvedPayload.expansion
+    ? { topic_expansion: resolvedPayload.expansion }
+    : {}),
   topics,
   research: scoredResearch,
   opportunities,
@@ -392,6 +431,7 @@ result: {
 	scoring: "heuristic_v1",
 	opportunity_selection: "top3_domain_diverse_v1",
 	scout_decision: "referral_first_v1",
+    ...(costObservation ? { cost_observation: costObservation } : {}),
   },
 },
     });

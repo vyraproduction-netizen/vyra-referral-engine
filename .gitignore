@@ -5,3 +5,5 @@
 *.pre-*
 *.pre-*
 cloudflare-vyra-job-controller.backup.*
+supabase/.branches/
+supabase/.temp/
