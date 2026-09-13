@@ -12,6 +12,7 @@ import {
 import {
   assertContentJob,
   runContent,
+  type ContentDraft,
 } from "./content.ts";
 import type { ProviderUsage } from "./content-provider.ts";
 import {
@@ -20,6 +21,7 @@ import {
 } from "./content-provider.ts";
 import {
   assertContentRevisionJob,
+  type ContentRevisionDraft,
 } from "./revision.ts";
 import {
   runContentRevision,
@@ -27,6 +29,10 @@ import {
 import {
   authorizeWorkerRequest,
 } from "../_shared/vyra/worker-auth.ts";
+import {
+  readPositiveEurMicros,
+  runCostProtectedProviderCall,
+} from "../_shared/vyra/cost-provider-checkpoint.ts";
 
 const contentProviderName = resolveContentProviderName(
   Deno.env.get("CONTENT_PROVIDER"),
@@ -63,15 +69,48 @@ Deno.serve(async (request) => {
 
     if (job.task_type === "content_revision") {
       assertContentRevisionJob(job);
+      const revisionJob = job;
 
       const source = await loadContentRevisionSource(
         job.payload.source_content_id,
       );
-      const draft = await runContentRevision(
-        job,
-        source,
-        contentProvider,
-      );
+      let draft: ContentRevisionDraft;
+      let costCheckpoint: {
+        reservationId: string;
+        reusedCheckpoint: boolean;
+      } | null = null;
+
+      if (contentProviderName === "openai") {
+        const protectedCall =
+          await runCostProtectedProviderCall({
+            jobId: job.id,
+            provider: "openai",
+            operation: "content_revision",
+            reservedEurMicros: readPositiveEurMicros(
+              "VYRA_OPENAI_CONTENT_RESERVATION_EUR_MICROS",
+            ),
+            execute: () => runContentRevision(
+              revisionJob,
+              source,
+              contentProvider,
+            ),
+            restore: (value) =>
+              value as ContentRevisionDraft,
+          });
+
+        draft = protectedCall.result;
+        costCheckpoint = {
+          reservationId: protectedCall.reservationId,
+          reusedCheckpoint: protectedCall.reusedCheckpoint,
+        };
+      } else {
+        draft = await runContentRevision(
+          job,
+          source,
+          contentProvider,
+        );
+      }
+
       const costObservation = contentProviderName === "openai"
         ? await observeOpenAIContentUsage(
           job.id,
@@ -83,6 +122,7 @@ Deno.serve(async (request) => {
         job,
         draft,
       );
+
       const qaJob = await createContentRevisionQaJob(
         job,
         draft,
@@ -101,6 +141,12 @@ Deno.serve(async (request) => {
         provider: contentProviderName,
         qa_job_id: qaJob?.id ?? null,
         cost_observation: costObservation,
+		        cost_checkpoint: costCheckpoint
+          ? {
+            reservation_id: costCheckpoint.reservationId,
+            reused: costCheckpoint.reusedCheckpoint,
+          }
+          : null,
       };
 
       await completeContentJob(job.id, result);
@@ -116,11 +162,41 @@ Deno.serve(async (request) => {
     }
 
     assertContentJob(job);
+	  const contentJob = job;
 
-    const draft = await runContent(
-      job,
-      contentProvider,
-    );
+    let draft: ContentDraft;
+    let costCheckpoint: {
+      reservationId: string;
+      reusedCheckpoint: boolean;
+    } | null = null;
+
+    if (contentProviderName === "openai") {
+      const protectedCall =
+        await runCostProtectedProviderCall({
+          jobId: job.id,
+          provider: "openai",
+          operation: "content_draft",
+          reservedEurMicros: readPositiveEurMicros(
+            "VYRA_OPENAI_CONTENT_RESERVATION_EUR_MICROS",
+          ),
+          execute: () => runContent(
+            contentJob,
+            contentProvider,
+          ),
+          restore: (value) => value as ContentDraft,
+        });
+
+      draft = protectedCall.result;
+      costCheckpoint = {
+        reservationId: protectedCall.reservationId,
+        reusedCheckpoint: protectedCall.reusedCheckpoint,
+      };
+    } else {
+      draft = await runContent(
+        job,
+        contentProvider,
+      );
+    }
 
     const costObservation = contentProviderName === "openai"
       ? await observeOpenAIContentUsage(
@@ -145,6 +221,12 @@ Deno.serve(async (request) => {
       provider: contentProviderName,
       qa_job_id: qaJob?.id ?? null,
       cost_observation: costObservation,
+	        cost_checkpoint: costCheckpoint
+        ? {
+          reservation_id: costCheckpoint.reservationId,
+          reused: costCheckpoint.reusedCheckpoint,
+        }
+        : null,
     };
 
     await completeContentJob(job.id, result);

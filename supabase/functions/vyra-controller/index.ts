@@ -71,6 +71,21 @@ type ControllerDatabase = {
         Update: Record<string, unknown>;
         Relationships: [];
       };
+	  vyra_cost_reservations: {
+        Row: {
+          id: string;
+          day_utc: string;
+          job_id: string;
+          provider: string;
+          operation: string;
+          reserved_eur_micros: number;
+          status: string;
+          review_reason: string | null;
+        };
+        Insert: Record<string, unknown>;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
       analytics_events: {
         Row: {
           id: string;
@@ -404,6 +419,33 @@ export default {
               { status: 500 },
             );
           }
+		    const { data: reservations, error: reservationError } =
+            await controllerAdmin
+              .from("vyra_cost_reservations")
+              .select(
+                "id, provider, operation, reserved_eur_micros, status, review_reason",
+              )
+              .eq("day_utc", dayStart.toISOString().slice(0, 10))
+              .in("status", ["reserved", "in_flight", "settled", "manual_review"]);
+
+          if (reservationError) {
+            return Response.json(
+              { ok: false, action, error: reservationError.message },
+              { status: 500 },
+            );
+          }
+
+          const heldReservations = reservations ?? [];
+          const heldEurMicros = heldReservations.reduce(
+            (sum, reservation) => sum + reservation.reserved_eur_micros,
+            0,
+          );
+          const manualReviewReservations = heldReservations.filter(
+            (reservation) => reservation.status === "manual_review",
+          );
+          const inFlightReservations = heldReservations.filter(
+            (reservation) => reservation.status === "in_flight",
+          );
 
           const { data: observations, error: observationError } =
             await controllerAdmin
@@ -465,6 +507,18 @@ export default {
           }
 
           const budget = budgetRows?.[0] ?? null;
+		  const activeReservationCount = heldReservations.filter(
+            (reservation) =>
+              reservation.status === "reserved" ||
+              reservation.status === "in_flight",
+          ).length;
+
+          const availableEurMicros = budget
+            ? Math.max(
+              0,
+              budget.daily_limit_eur_micros - heldEurMicros,
+            )
+            : null;
           const estimatedUsdMicros = [...providerSummary.values()].reduce(
             (sum, provider) => sum + provider.estimated_usd_micros,
             0,
@@ -500,6 +554,11 @@ export default {
                   pricedObservations,
                   usdPricedObservations,
                 ),
+				budget_committed_eur_micros: heldEurMicros,
+                available_eur_micros: availableEurMicros,
+                active_reservation_count: activeReservationCount,
+                in_flight_reservation_count: inFlightReservations.length,
+                manual_review_count: manualReviewReservations.length,
               }
               : null,
             providers: [...providerSummary.values()].sort((left, right) =>

@@ -1,5 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { LocalMockResearchProvider } from "./mock-research.ts";
+import type {
+  ResearchResult,
+} from "./research.ts";
 import { TavilyResearchProvider } from "./tavily-research.ts";
 import { normalizeResearch } from "./research-normalizer.ts";
 import { scoreResearch } from "./research-scoring.ts";
@@ -25,6 +28,10 @@ import {
 import {
   recordTavilyCostObservation,
 } from "../_shared/vyra/cost-observability.ts";
+import {
+  readPositiveEurMicros,
+  runCostProtectedProviderCall,
+} from "../_shared/vyra/cost-provider-checkpoint.ts";
 import {
   assertTopicScoutLedgerJob,
 } from "./ledger-job-binding.ts";
@@ -312,12 +319,43 @@ Deno.serve(async (req: Request) => {
 
     assertTopicScoutLedgerJob(ledgerJob, body.job_id);
 
-	const researchResults = await researchProvider.search({
-  query: payload.topic_seed,
-  language: payload.language,
-  region: payload.region,
-  max_results: payload.constraints?.max_topics ?? 10,
-});
+	    let researchResults: ResearchResult[];
+    let costCheckpoint: {
+      reservationId: string;
+      reusedCheckpoint: boolean;
+    } | null = null;
+
+    if (researchProviderType === "tavily") {
+      const protectedCall =
+        await runCostProtectedProviderCall({
+          jobId: body.job_id,
+          provider: "tavily",
+          operation: "topic_scout_search",
+          reservedEurMicros: readPositiveEurMicros(
+            "VYRA_TAVILY_RESERVATION_EUR_MICROS",
+          ),
+          execute: () => researchProvider.search({
+            query: payload.topic_seed,
+            language: payload.language,
+            region: payload.region,
+            max_results: payload.constraints?.max_topics ?? 10,
+          }),
+          restore: (value) => value as ResearchResult[],
+        });
+
+      researchResults = protectedCall.result;
+      costCheckpoint = {
+        reservationId: protectedCall.reservationId,
+        reusedCheckpoint: protectedCall.reusedCheckpoint,
+      };
+    } else {
+      researchResults = await researchProvider.search({
+        query: payload.topic_seed,
+        language: payload.language,
+        region: payload.region,
+        max_results: payload.constraints?.max_topics ?? 10,
+      });
+    }
 
 const costObservation = researchProviderType === "tavily"
   ? await observeTavilyTopicScoutUsage(body.job_id, {
@@ -432,6 +470,14 @@ result: {
 	opportunity_selection: "top3_domain_diverse_v1",
 	scout_decision: "referral_first_v1",
     ...(costObservation ? { cost_observation: costObservation } : {}),
+	    ...(costCheckpoint
+      ? {
+        cost_checkpoint: {
+          reservation_id: costCheckpoint.reservationId,
+          reused: costCheckpoint.reusedCheckpoint,
+        },
+      }
+      : {}),
   },
 },
     });

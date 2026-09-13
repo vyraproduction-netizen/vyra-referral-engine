@@ -15,6 +15,7 @@ import {
 import {
   assertResearchJob,
   runResearch,
+  type ResearchFinding,
 } from "./research.ts";
 import {
   resolveResearchExpandedTopicLineage,
@@ -22,6 +23,10 @@ import {
 import {
   authorizeWorkerRequest,
 } from "../_shared/vyra/worker-auth.ts";
+import {
+  readPositiveEurMicros,
+  runCostProtectedProviderCall,
+} from "../_shared/vyra/cost-provider-checkpoint.ts";
 
 const researchProviderName = resolveResearchProviderName(
   Deno.env.get("RESEARCH_PROVIDER"),
@@ -57,14 +62,44 @@ Deno.serve(async (request) => {
     }
 
     assertResearchJob(job);
+	const researchJob = job;
 
     const topicExpansion =
       resolveResearchExpandedTopicLineage(job);
 
-    const researchResult = await runResearch(
-      job,
-      researchProvider,
-    );
+	let researchResult: ResearchFinding;
+	let costCheckpoint: {
+	  reservationId: string;
+	  reusedCheckpoint: boolean;
+	} | null = null;
+
+	if (researchProviderName === "tavily") {
+	  const protectedCall =
+		await runCostProtectedProviderCall({
+		  jobId: job.id,
+		  provider: "tavily",
+		  operation: "research_worker_search",
+		  reservedEurMicros: readPositiveEurMicros(
+			"VYRA_TAVILY_RESERVATION_EUR_MICROS",
+		  ),
+		        execute: () => runResearch(
+        researchJob,
+        researchProvider,
+      ),
+		  restore: (value) => value as ResearchFinding,
+		});
+
+	  researchResult = protectedCall.result;
+	  costCheckpoint = {
+		reservationId: protectedCall.reservationId,
+		reusedCheckpoint: protectedCall.reusedCheckpoint,
+	  };
+	} else {
+	  researchResult = await runResearch(
+		job,
+		researchProvider,
+	  );
+	}
 
     const costObservation = researchProviderName === "tavily"
       ? await observeTavilyResearchUsage(job.id, {
@@ -97,6 +132,14 @@ Deno.serve(async (request) => {
         program,
         referral_link: referralLink,
         ...(costObservation ? { cost_observation: costObservation } : {}),
+		        ...(costCheckpoint
+          ? {
+            cost_checkpoint: {
+              reservation_id: costCheckpoint.reservationId,
+              reused: costCheckpoint.reusedCheckpoint,
+            },
+          }
+          : {}),
         ...(topicExpansion
           ? { topic_expansion: topicExpansion }
           : {}),
