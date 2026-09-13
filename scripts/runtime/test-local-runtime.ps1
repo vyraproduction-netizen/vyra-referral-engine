@@ -1,7 +1,7 @@
 param(
     [string]$ProjectRoot = "C:\VYRA-GITHUB",
-    [string]$SupabaseUrl = "http://127.0.0.1:54321",
-    [string]$DatabaseContainer = "supabase_db_vyra-local"
+    [string]$SupabaseUrl = "http://127.0.0.1:55321",
+    [string]$DatabaseContainer = "supabase_db_vyra-local-permanent"
 )
 
 $ErrorActionPreference = "Stop"
@@ -286,6 +286,17 @@ if ($providerSetting -notmatch '^\s*RESEARCH_PROVIDER\s*=\s*mock\s*$') {
     throw "Runtime worker test requires RESEARCH_PROVIDER=mock"
 }
 Write-Pass "Explicit local mock provider configuration detected"
+
+$publisherProviderSetting = Get-Content -LiteralPath $localEnvPath |
+    Where-Object {
+        $_ -match '^\s*PUBLISH_PROVIDER\s*='
+    } |
+    Select-Object -Last 1
+
+if ($publisherProviderSetting -notmatch '^\s*PUBLISH_PROVIDER\s*=\s*mock\s*$') {
+    throw "Runtime publisher test requires PUBLISH_PROVIDER=mock"
+}
+Write-Pass "Explicit local mock publisher provider configuration detected"
 
 $controllerSecretSetting = Get-Content -LiteralPath $localEnvPath |
     Where-Object {
@@ -1169,6 +1180,7 @@ select
   j.attempts || '|' ||
   c.status || '|' ||
   (c.published_url = '$expectedPublishedUrl') || '|' ||
+  (c.published_at is not null) || '|' ||
   (c.program_id = '$programId'::uuid) || '|' ||
   (c.referral_link_id = '$verifiedReferralLinkId'::uuid) || '|' ||
   (c.monetized_at is not null) || '|' ||
@@ -1202,7 +1214,7 @@ where j.id = '$publishJobId'::uuid;
 
     if (
         $publishedStateValue.Trim() -ne
-            "completed|1|published|true|true|true|true|true|" +
+            "completed|1|published|true|true|true|true|true|true|" +
             "true|true|true|true|true"
     ) {
         throw (

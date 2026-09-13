@@ -135,6 +135,7 @@ export async function savePublishResult(
       body: publishedBody,
       published_url: result.published_url,
       status: "published",
+      published_at: updatedAt,
       program_id:
         result.monetization?.program_id ?? null,
       referral_link_id:
@@ -147,7 +148,7 @@ export async function savePublishResult(
     .eq("id", result.content_id)
     .eq("status", "approved")
     .select(
-      "id, slug, status, published_url, program_id, referral_link_id, monetized_at",
+      "id, slug, status, published_url, published_at, program_id, referral_link_id, monetized_at",
     )
     .maybeSingle();
 
