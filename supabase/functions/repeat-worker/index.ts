@@ -1,0 +1,73 @@
+import {
+  claimRepeatJob,
+  completeRepeatJob,
+  createContentRevisionFromPlan,
+  createTopicExpansionFromPlan,
+  retryRepeatJob,
+} from "./db.ts";
+import { routeRepeatDownstream } from "./downstream.ts";
+import { runRepeatJob } from "./repeat-job.ts";
+import { authorizeWorkerRequest } from "../_shared/vyra/worker-auth.ts";
+
+Deno.serve(async (request) => {
+  const authorization = authorizeWorkerRequest(
+    request,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
+  let job = null;
+
+  try {
+    job = await claimRepeatJob();
+
+    if (!job) {
+      return Response.json({
+        ok: true,
+        claimed: false,
+        message: "No Repeat job available",
+      });
+    }
+
+    const planned = runRepeatJob(job);
+    const downstream = await routeRepeatDownstream(
+      planned.plan,
+      createContentRevisionFromPlan,
+      createTopicExpansionFromPlan,
+    );
+    const result = {
+      ...planned,
+      downstream,
+    };
+
+    await completeRepeatJob(job.id, result);
+
+    return Response.json({
+      ok: true,
+      claimed: true,
+      job_id: job.id,
+      repeat: result,
+    });
+  } catch (error) {
+    if (job?.id) {
+      await retryRepeatJob(
+        job.id,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    return Response.json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      { status: 500 },
+    );
+  }
+});

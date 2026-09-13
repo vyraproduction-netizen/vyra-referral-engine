@@ -1,5 +1,159 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { withSupabase } from "npm:@supabase/server@^1";
+import { withSupabase } from "npm:@supabase/server@1.4.1";
+import { createAdminClient } from "npm:@supabase/server@1.4.1/core";
+import { prepareProgramActivation } from "./program-activation.ts";
+import type { ProgramActivationInput } from "./program-activation.ts";
+import {
+  prepareControllerAttributionRequest,
+} from "./analytics-attribution.ts";
+import { prepareAttributedEvent } from "../analytics-worker/attribution.ts";
+import type { AttributedEventInsert } from "../analytics-worker/attribution.ts";
+import {
+  createWorkerDispatchHeaders,
+  resolveWorkerDispatchRoute,
+  supportedDispatchAgents,
+} from "./worker-dispatch.ts";
+import {
+  hasRecordedPrice,
+} from "../_shared/vyra/pricing-catalog.ts";
+
+type ControllerJob = {
+  id: string;
+  payload: Record<string, unknown> | null;
+};
+
+type ControllerDatabase = {
+  public: {
+    Tables: {
+      content: {
+        Row: {
+          id: string;
+          status: string;
+          referral_link_id: string | null;
+        };
+        Insert: Record<string, unknown>;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
+      jobs: {
+        Row: {
+          id: string;
+          agent: string;
+          task_type: string;
+          status: string;
+          priority: number;
+          attempts: number;
+          max_attempts: number;
+          next_run_at: string | null;
+          created_at: string;
+          started_at: string | null;
+          completed_at: string | null;
+        };
+        Insert: Record<string, unknown>;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
+      vyra_cost_observations: {
+        Row: {
+          provider: string;
+          operation: string;
+          input_tokens: number | null;
+          output_tokens: number | null;
+          total_tokens: number | null;
+          estimated_eur_micros: number | null;
+          actual_eur_micros: number | null;
+          estimated_usd_micros: number | null;
+          actual_usd_micros: number | null;
+          pricing_version: string | null;
+          observed_at: string;
+        };
+        Insert: Record<string, unknown>;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
+      analytics_events: {
+        Row: {
+          id: string;
+          dedupe_key: string | null;
+          event_type: string;
+          content_id: string | null;
+          referral_link_id: string | null;
+          session_id: string | null;
+          country: string | null;
+          language: string | null;
+          source: string | null;
+          metadata: Record<string, unknown>;
+          value: number;
+          created_at: string;
+        };
+        Insert: AttributedEventInsert;
+        Update: Record<string, unknown>;
+        Relationships: [];
+      };
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      claim_next_job: {
+        Args: {
+          p_agent: string;
+        };
+        Returns: ControllerJob[];
+      };
+      complete_job: {
+        Args: {
+          p_job_id: string;
+          p_status: string;
+          p_result: object;
+          p_error_message: string | null;
+        };
+        Returns: unknown;
+      };
+      retry_job: {
+        Args: {
+          p_job_id: string;
+          p_error_message: string;
+        };
+        Returns: unknown;
+      };
+      get_vyra_cost_budget_status: {
+        Args: {
+          p_day?: string;
+        };
+        Returns: {
+          currency: string;
+          mode: string;
+          daily_limit_eur_micros: number;
+          observed_calls: number;
+          estimated_eur_micros: number;
+          actual_eur_micros: number;
+        }[];
+      };
+      activate_program: {
+        Args: {
+          p_program_id: string;
+          p_affiliate_url: string;
+          p_terms_url: string;
+          p_commission_type: string;
+          p_commission_value: number;
+          p_recurring: boolean;
+          p_cookie_duration_days: number;
+          p_countries: string[];
+          p_verified_by: string;
+          p_verification_note: string | null;
+        };
+        Returns: Record<string, unknown>;
+      };
+    };
+    Enums: {
+      [_ in never]: never;
+    };
+    CompositeTypes: {
+      [_ in never]: never;
+    };
+  };
+};
 
 const allowedAgents = new Set([
   "topic_scout",
@@ -8,21 +162,132 @@ const allowedAgents = new Set([
   "qa",
   "publisher",
   "analytics",
+  "optimizer",
+  "repeat",
 ]);
+
+const allowedActions = [
+  "claim",
+  "complete",
+  "retry",
+  "health",
+  "job_status",
+  "scheduler_preview",
+  "cost_status",
+  "dispatch",
+  "activate_program",
+  "record_analytics_event",
+] as const;
+
+type StoredAttributedEvent = ControllerDatabase["public"]["Tables"][
+  "analytics_events"
+]["Row"];
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(
+      value as Record<string, unknown>,
+    ).filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+
+    return `{${
+      entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+        .join(",")
+    }}`;
+  }
+
+  return JSON.stringify(value) ?? "null";
+}
+
+function isSameAttributedEvent(
+  stored: StoredAttributedEvent,
+  prepared: AttributedEventInsert,
+): boolean {
+  return stored.dedupe_key === prepared.dedupe_key &&
+    stored.event_type === prepared.event_type &&
+    stored.content_id === prepared.content_id &&
+    stored.referral_link_id ===
+      prepared.referral_link_id &&
+    stored.session_id === prepared.session_id &&
+    stored.country === prepared.country &&
+    stored.language === prepared.language &&
+    stored.source === prepared.source &&
+    stableJson(stored.metadata) ===
+      stableJson(prepared.metadata) &&
+    Number(stored.value) === prepared.value &&
+    new Date(stored.created_at).toISOString() ===
+      prepared.created_at;
+}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function getSupabaseAdminSecret(): string {
+  const adminSecret = Deno.env.get("SUPABASE_SECRET_KEY") ??
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!adminSecret) {
+    throw new Error(
+      "A Supabase administrative key is required",
+    );
+  }
+
+  return adminSecret;
+}
+
+function getSupabaseUrl(): string {
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+
+  if (!supabaseUrl) {
+    throw new Error("SUPABASE_URL is required");
+  }
+
+  return supabaseUrl;
+}
+
+function getControllerAuthConfig() {
+  const localSecret = Deno.env.get("VYRA_CONTROLLER_SECRET");
+
+  if (!localSecret) {
+    return {
+      auth: "secret:vyra_controller" as const,
+    };
+  }
+
+  return {
+    auth: "secret:vyra_controller" as const,
+    env: {
+      secretKeys: {
+        default: getSupabaseAdminSecret(),
+        vyra_controller: localSecret,
+      },
+    },
+  };
+}
+
+const controllerAdmin = createAdminClient<ControllerDatabase>({
+  env: {
+    url: getSupabaseUrl(),
+    secretKeys: {
+      default: getSupabaseAdminSecret(),
+    },
+  },
+});
+
 export default {
-  fetch: withSupabase(
-    { auth: "secret:vyra_controller" },
+  fetch: withSupabase<ControllerDatabase>(
+    getControllerAuthConfig(),
     async (req, ctx) => {
       try {
         if (req.method !== "POST") {
           return Response.json(
             { ok: false, error: "POST required" },
-            { status: 405 }
+            { status: 405 },
           );
         }
 
@@ -33,19 +298,18 @@ export default {
           body = {};
         }
 
-        const action =
-          typeof body.action === "string"
-            ? body.action.trim().toLowerCase()
-            : "claim";
+        const action = typeof body.action === "string"
+          ? body.action.trim().toLowerCase()
+          : "claim";
 
-        if (!["claim", "complete", "retry", "health", "dispatch"].includes(action)) {
+        if (!(allowedActions as readonly string[]).includes(action)) {
           return Response.json(
             {
               ok: false,
               error: "Invalid action",
-              allowed_actions: ["claim", "complete", "retry", "health", "dispatch"],
+              allowed_actions: [...allowedActions],
             },
-            { status: 400 }
+            { status: 400 },
           );
         }
 
@@ -57,69 +321,459 @@ export default {
           });
         }
 
-        if (action === "dispatch") {
-          const agent =
-            typeof body.agent === "string" && body.agent.trim()
-              ? body.agent.trim()
-              : "topic_scout";
+        if (action === "job_status") {
+          const jobId = typeof body.job_id === "string"
+            ? body.job_id.trim()
+            : "";
 
-        if (agent === "research") {
-		  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
+            return Response.json(
+              { ok: false, action, error: "A valid job_id UUID is required" },
+              { status: 400 },
+            );
+          }
 
-		  if (!supabaseUrl) {
-			return Response.json(
-			  { ok: false, error: "SUPABASE_URL is required" },
-			  { status: 500 }
-			);
-		  }
+          const { data: job, error } = await controllerAdmin
+            .from("jobs")
+            .select(
+              "id, agent, task_type, status, attempts, max_attempts, next_run_at, started_at, completed_at",
+            )
+            .eq("id", jobId)
+            .maybeSingle();
 
-		const workerResponse = await fetch(
-		  `${supabaseUrl}/functions/v1/research-worker`,
-		  {
-			method: "POST",
-			headers: {
-			  "Content-Type": "application/json",
-			},
-			body: "{}",
-		  }
-		);
+          if (error) {
+            return Response.json(
+              { ok: false, action, error: error.message },
+              { status: 500 },
+            );
+          }
 
-		const workerData = await workerResponse.json();
+          return Response.json({
+            ok: true,
+            action,
+            job: job ?? null,
+          });
+        }
 
-		return Response.json(
-		  {
-			action: "dispatch",
-			agent: "research",
-			...workerData,
-		  },
-		  { status: workerResponse.status }
-		);
-	  }
+        if (action === "scheduler_preview") {
+          const { data: plannedJobs, error } = await controllerAdmin
+            .from("jobs")
+            .select(
+              "id, agent, task_type, status, priority, attempts, max_attempts, next_run_at, created_at",
+            )
+            .eq("status", "queued")
+            .order("priority", { ascending: false })
+            .order("created_at", { ascending: true })
+            .limit(25);
 
-	  if (agent !== "topic_scout") {
-		return Response.json(
-		  {
-			ok: false,
-			error: "Dispatch supports topic_scout and research only",
-		  },
-		{ status: 400 }
-	  );
-	}
+          if (error) {
+            return Response.json(
+              { ok: false, action, error: error.message },
+              { status: 500 },
+            );
+          }
 
-          const { data, error } =
-            await ctx.supabaseAdmin.rpc("claim_next_job", {
-              p_agent: agent,
+          return Response.json({
+            ok: true,
+            action,
+            dry_run: true,
+            external_calls: 0,
+            planned_count: plannedJobs?.length ?? 0,
+            planned_jobs: plannedJobs ?? [],
+          });
+        }
+
+        if (action === "cost_status") {
+          const now = new Date();
+          const dayStart = new Date(Date.UTC(
+            now.getUTCFullYear(),
+            now.getUTCMonth(),
+            now.getUTCDate(),
+          ));
+          const nextDayStart = new Date(dayStart);
+          nextDayStart.setUTCDate(nextDayStart.getUTCDate() + 1);
+
+          const { data: budgetRows, error: budgetError } =
+            await controllerAdmin.rpc("get_vyra_cost_budget_status", {
+              p_day: dayStart.toISOString().slice(0, 10),
             });
+
+          if (budgetError) {
+            return Response.json(
+              { ok: false, action, error: budgetError.message },
+              { status: 500 },
+            );
+          }
+
+          const { data: observations, error: observationError } =
+            await controllerAdmin
+              .from("vyra_cost_observations")
+              .select(
+                "provider, operation, input_tokens, output_tokens, total_tokens, estimated_eur_micros, actual_eur_micros, estimated_usd_micros, actual_usd_micros, pricing_version, observed_at",
+              )
+              .gte("observed_at", dayStart.toISOString())
+              .lt("observed_at", nextDayStart.toISOString());
+
+          if (observationError) {
+            return Response.json(
+              { ok: false, action, error: observationError.message },
+              { status: 500 },
+            );
+          }
+
+          const providerSummary = new Map<string, {
+            provider: string;
+            observations: number;
+            input_tokens: number;
+            output_tokens: number;
+            total_tokens: number;
+            estimated_usd_micros: number;
+            actual_usd_micros: number;
+            usd_priced_observations: number;
+          }>();
+          let pricedObservations = 0;
+
+          for (const observation of observations ?? []) {
+            const current = providerSummary.get(observation.provider) ?? {
+              provider: observation.provider,
+              observations: 0,
+              input_tokens: 0,
+              output_tokens: 0,
+              total_tokens: 0,
+              estimated_usd_micros: 0,
+              actual_usd_micros: 0,
+              usd_priced_observations: 0,
+            };
+
+            current.observations += 1;
+            current.input_tokens += observation.input_tokens ?? 0;
+            current.output_tokens += observation.output_tokens ?? 0;
+            current.total_tokens += observation.total_tokens ?? 0;
+            current.estimated_usd_micros += observation.estimated_usd_micros ?? 0;
+            current.actual_usd_micros += observation.actual_usd_micros ?? 0;
+            if (observation.estimated_usd_micros !== null || observation.actual_usd_micros !== null) {
+              current.usd_priced_observations += 1;
+            }
+            providerSummary.set(observation.provider, current);
+
+            if (
+              observation.estimated_eur_micros !== null ||
+              observation.actual_eur_micros !== null
+            ) {
+              pricedObservations += 1;
+            }
+          }
+
+          const budget = budgetRows?.[0] ?? null;
+          const estimatedUsdMicros = [...providerSummary.values()].reduce(
+            (sum, provider) => sum + provider.estimated_usd_micros,
+            0,
+          );
+          const actualUsdMicros = [...providerSummary.values()].reduce(
+            (sum, provider) => sum + provider.actual_usd_micros,
+            0,
+          );
+          const usdPricedObservations = [...providerSummary.values()].reduce(
+            (sum, provider) => sum + provider.usd_priced_observations,
+            0,
+          );
+
+          return Response.json({
+            ok: true,
+            action,
+            read_only: true,
+            external_calls: 0,
+            day_utc: dayStart.toISOString().slice(0, 10),
+            budget: budget
+              ? {
+                currency: budget.currency,
+                mode: budget.mode,
+                daily_limit_eur_micros: budget.daily_limit_eur_micros,
+                observed_calls: budget.observed_calls,
+                estimated_eur_micros: budget.estimated_eur_micros,
+                actual_eur_micros: budget.actual_eur_micros,
+                estimated_usd_micros: estimatedUsdMicros,
+                actual_usd_micros: actualUsdMicros,
+                usd_priced_observations: usdPricedObservations,
+                priced_observations: pricedObservations,
+                pricing_available: hasRecordedPrice(
+                  pricedObservations,
+                  usdPricedObservations,
+                ),
+              }
+              : null,
+            providers: [...providerSummary.values()].sort((left, right) =>
+              left.provider.localeCompare(right.provider)
+            ),
+          });
+        }
+
+        if (action === "record_analytics_event") {
+          let request;
+
+          try {
+            request = prepareControllerAttributionRequest(body);
+          } catch (error) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: getErrorMessage(error),
+              },
+              { status: 400 },
+            );
+          }
+
+          const { data: content, error: contentError } = await controllerAdmin
+            .from("content")
+            .select("id, status, referral_link_id")
+            .eq("id", request.content_id)
+            .maybeSingle();
+
+          if (contentError) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: contentError.message,
+              },
+              { status: 400 },
+            );
+          }
+
+          if (!content) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: "Attribution content was not found",
+              },
+              { status: 404 },
+            );
+          }
+
+          let prepared: AttributedEventInsert;
+
+          try {
+            prepared = prepareAttributedEvent(
+              content,
+              request.attribution,
+            );
+          } catch (error) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: getErrorMessage(error),
+              },
+              { status: 400 },
+            );
+          }
+
+          const eventColumns =
+            "id, dedupe_key, event_type, content_id, referral_link_id, session_id, country, language, source, metadata, value, created_at";
+
+          const {
+            data: existing,
+            error: existingError,
+          } = await controllerAdmin
+            .from("analytics_events")
+            .select(eventColumns)
+            .eq("dedupe_key", prepared.dedupe_key)
+            .maybeSingle();
+
+          if (existingError) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: existingError.message,
+              },
+              { status: 500 },
+            );
+          }
+
+          if (existing) {
+            if (!isSameAttributedEvent(existing, prepared)) {
+              return Response.json(
+                {
+                  ok: false,
+                  action,
+                  error: "Analytics dedupe key collision",
+                },
+                { status: 409 },
+              );
+            }
+
+            return Response.json({
+              ok: true,
+              action,
+              event: existing,
+              reused: true,
+            });
+          }
+
+          const { data: inserted, error: insertError } = await controllerAdmin
+            .from("analytics_events")
+            .insert(prepared)
+            .select(eventColumns)
+            .single();
+
+          if (insertError) {
+            if (insertError.code === "23505") {
+              const { data: raced, error: racedError } = await controllerAdmin
+                .from("analytics_events")
+                .select(eventColumns)
+                .eq("dedupe_key", prepared.dedupe_key)
+                .maybeSingle();
+
+              if (
+                !racedError &&
+                raced &&
+                isSameAttributedEvent(raced, prepared)
+              ) {
+                return Response.json({
+                  ok: true,
+                  action,
+                  event: raced,
+                  reused: true,
+                });
+              }
+            }
+
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: insertError.message,
+              },
+              { status: insertError.code === "23505" ? 409 : 400 },
+            );
+          }
+
+          return Response.json({
+            ok: true,
+            action,
+            event: inserted,
+            reused: false,
+          });
+        }
+
+        if (action === "activate_program") {
+          let activation;
+
+          try {
+            activation = prepareProgramActivation(
+              body as unknown as ProgramActivationInput,
+            );
+          } catch (error) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: getErrorMessage(error),
+              },
+              { status: 400 },
+            );
+          }
+
+          const { data, error } = await controllerAdmin.rpc(
+            "activate_program",
+            {
+              p_program_id: activation.program_id,
+              p_affiliate_url: activation.affiliate_url,
+              p_terms_url: activation.terms_url,
+              p_commission_type: activation.commission_type,
+              p_commission_value: activation.commission_value,
+              p_recurring: activation.recurring,
+              p_cookie_duration_days: activation.cookie_duration_days,
+              p_countries: activation.countries,
+              p_verified_by: activation.verified_by,
+              p_verification_note: activation.verification_note,
+            },
+          );
+
+          if (error) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: error.message,
+              },
+              { status: 400 },
+            );
+          }
+
+          return Response.json({
+            ok: true,
+            action,
+            activation: data,
+          });
+        }
+
+        if (action === "dispatch") {
+          const agent = typeof body.agent === "string" && body.agent.trim()
+            ? body.agent.trim()
+            : "topic_scout";
+          const workerName = resolveWorkerDispatchRoute(agent);
+
+          if (workerName) {
+            const supabaseUrl = Deno.env.get("SUPABASE_URL");
+
+            if (!supabaseUrl) {
+              return Response.json(
+                { ok: false, error: "SUPABASE_URL is required" },
+                { status: 500 },
+              );
+            }
+
+            const workerResponse = await fetch(
+              `${supabaseUrl}/functions/v1/${workerName}`,
+              {
+                method: "POST",
+                headers: createWorkerDispatchHeaders(
+                  Deno.env.get("VYRA_WORKER_SECRET"),
+                ),
+                body: "{}",
+              },
+            );
+
+            const workerData = await workerResponse.json();
+
+            return Response.json(
+              {
+                action: "dispatch",
+                agent,
+                ...workerData,
+              },
+              { status: workerResponse.status },
+            );
+          }
+
+          if (agent !== "topic_scout") {
+            return Response.json(
+              {
+                ok: false,
+                error: `Dispatch supports ${
+                  supportedDispatchAgents.join(", ")
+                } only`,
+              },
+              { status: 400 },
+            );
+          }
+
+          const { data, error } = await controllerAdmin.rpc("claim_next_job", {
+            p_agent: agent,
+          });
 
           if (error) {
             return Response.json(
               { ok: false, action, agent, error: error.message },
-              { status: 500 }
+              { status: 500 },
             );
           }
 
-          const job =
-            Array.isArray(data) ? data[0] ?? null : data ?? null;
+          const job = Array.isArray(data) ? data[0] ?? null : data ?? null;
 
           if (!job) {
             return Response.json({
@@ -142,15 +796,15 @@ export default {
               `${supabaseUrl}/functions/v1/topic-scout`,
               {
                 method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
+                headers: createWorkerDispatchHeaders(
+                  Deno.env.get("VYRA_WORKER_SECRET"),
+                ),
                 body: JSON.stringify({
                   action: "run",
                   job_id: job.id,
                   payload: job.payload,
                 }),
-              }
+              },
             );
 
             const scoutData = await scoutResponse.json();
@@ -158,12 +812,12 @@ export default {
             if (!scoutResponse.ok || !scoutData.ok) {
               throw new Error(
                 scoutData.error ??
-                  `topic-scout HTTP ${scoutResponse.status}`
+                  `topic-scout HTTP ${scoutResponse.status}`,
               );
             }
 
             const { data: completed, error: completeError } =
-              await ctx.supabaseAdmin.rpc("complete_job", {
+              await controllerAdmin.rpc("complete_job", {
                 p_job_id: job.id,
                 p_status: "completed",
                 p_result: scoutData.result ?? scoutData,
@@ -186,8 +840,8 @@ export default {
           } catch (error) {
             const message = getErrorMessage(error);
 
-            const { data: retried, error: retryError } =
-              await ctx.supabaseAdmin.rpc("retry_job", {
+            const { data: retried, error: retryError } = await controllerAdmin
+              .rpc("retry_job", {
                 p_job_id: job.id,
                 p_error_message: message,
               });
@@ -202,15 +856,14 @@ export default {
                 retry_error: retryError?.message ?? null,
                 retried: retried ?? null,
               },
-              { status: 500 }
+              { status: 500 },
             );
           }
         }
         if (action === "claim") {
-          const agent =
-            typeof body.agent === "string" && body.agent.trim()
-              ? body.agent.trim()
-              : "topic_scout";
+          const agent = typeof body.agent === "string" && body.agent.trim()
+            ? body.agent.trim()
+            : "topic_scout";
 
           if (!allowedAgents.has(agent)) {
             return Response.json(
@@ -219,24 +872,22 @@ export default {
                 error: "Invalid agent",
                 allowed_agents: [...allowedAgents],
               },
-              { status: 400 }
+              { status: 400 },
             );
           }
 
-          const { data, error } =
-            await ctx.supabaseAdmin.rpc("claim_next_job", {
-              p_agent: agent,
-            });
+          const { data, error } = await controllerAdmin.rpc("claim_next_job", {
+            p_agent: agent,
+          });
 
           if (error) {
             return Response.json(
               { ok: false, action, agent, error: error.message },
-              { status: 500 }
+              { status: 500 },
             );
           }
 
-          const job =
-            Array.isArray(data) ? data[0] ?? null : data ?? null;
+          const job = Array.isArray(data) ? data[0] ?? null : data ?? null;
 
           return Response.json({
             ok: true,
@@ -248,33 +899,30 @@ export default {
         }
 
         if (action === "complete") {
-          const jobId =
-            typeof body.job_id === "string" ? body.job_id : null;
+          const jobId = typeof body.job_id === "string" ? body.job_id : null;
 
           if (!jobId) {
             return Response.json(
               { ok: false, error: "job_id is required" },
-              { status: 400 }
+              { status: 400 },
             );
           }
 
-          const result =
-            body.result && typeof body.result === "object"
-              ? body.result
-              : {};
+          const result = body.result && typeof body.result === "object"
+            ? body.result
+            : {};
 
-          const { data, error } =
-            await ctx.supabaseAdmin.rpc("complete_job", {
-              p_job_id: jobId,
-              p_status: "completed",
-              p_result: result,
-              p_error_message: null,
-            });
+          const { data, error } = await controllerAdmin.rpc("complete_job", {
+            p_job_id: jobId,
+            p_status: "completed",
+            p_result: result,
+            p_error_message: null,
+          });
 
           if (error) {
             return Response.json(
               { ok: false, action, error: error.message },
-              { status: 500 }
+              { status: 500 },
             );
           }
 
@@ -286,31 +934,28 @@ export default {
         }
 
         if (action === "retry") {
-          const jobId =
-            typeof body.job_id === "string" ? body.job_id : null;
+          const jobId = typeof body.job_id === "string" ? body.job_id : null;
 
           if (!jobId) {
             return Response.json(
               { ok: false, error: "job_id is required" },
-              { status: 400 }
+              { status: 400 },
             );
           }
 
-          const errorMessage =
-            typeof body.error_message === "string"
-              ? body.error_message
-              : "Unknown job error";
+          const errorMessage = typeof body.error_message === "string"
+            ? body.error_message
+            : "Unknown job error";
 
-          const { data, error } =
-            await ctx.supabaseAdmin.rpc("retry_job", {
-              p_job_id: jobId,
-              p_error_message: errorMessage,
-            });
+          const { data, error } = await controllerAdmin.rpc("retry_job", {
+            p_job_id: jobId,
+            p_error_message: errorMessage,
+          });
 
           if (error) {
             return Response.json(
               { ok: false, action, error: error.message },
-              { status: 500 }
+              { status: 500 },
             );
           }
 
@@ -323,16 +968,14 @@ export default {
 
         return Response.json(
           { ok: false, error: "Unhandled action" },
-          { status: 500 }
+          { status: 500 },
         );
       } catch (error) {
         return Response.json(
           { ok: false, error: getErrorMessage(error) },
-          { status: 500 }
+          { status: 500 },
         );
       }
-    }
+    },
   ),
 };
-
-

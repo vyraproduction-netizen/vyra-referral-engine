@@ -1,3 +1,9 @@
+import type {
+  VyraJob,
+} from "../_shared/vyra/job-store.ts";
+import type {
+  ResearchProvider,
+} from "./research-provider.ts";
 import {
   researchWithTavily,
 } from "./tavily-research.ts";
@@ -25,10 +31,7 @@ export type ResearchFinding = {
   };
 };
 
-type ResearchJob = {
-  id: string;
-  agent: string;
-  task_type: string;
+export type ResearchJob = VyraJob & {
   payload: {
     request_id: string;
     language: string;
@@ -48,8 +51,91 @@ type ResearchJob = {
   };
 };
 
+export function assertResearchJob(
+  job: VyraJob,
+): asserts job is ResearchJob {
+  const payload = job.payload;
+
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    throw new Error("Research job payload is required");
+  }
+
+  const candidate = payload.candidate;
+
+  if (
+    !candidate ||
+    typeof candidate !== "object" ||
+    Array.isArray(candidate)
+  ) {
+    throw new Error("Research job candidate is required");
+  }
+
+  const candidateRecord =
+    candidate as Record<string, unknown>;
+
+  const payloadStringFields = [
+    "request_id",
+    "language",
+    "region",
+    "topic_seed",
+    "recommended_action",
+  ] as const;
+
+  for (const field of payloadStringFields) {
+    if (
+      typeof payload[field] !== "string" ||
+      payload[field].length === 0
+    ) {
+      throw new Error(
+        `Research job payload.${field} is required`,
+      );
+    }
+  }
+
+  const candidateStringFields = [
+    "title",
+    "url",
+    "evidence_source",
+  ] as const;
+
+  for (const field of candidateStringFields) {
+    if (
+      typeof candidateRecord[field] !== "string" ||
+      candidateRecord[field].length === 0
+    ) {
+      throw new Error(
+        `Research job candidate.${field} is required`,
+      );
+    }
+  }
+
+  const candidateNumberFields = [
+    "opportunity_score",
+    "commercial_intent",
+    "content_potential",
+    "referral_potential",
+    "relevance",
+  ] as const;
+
+  for (const field of candidateNumberFields) {
+    if (
+      typeof candidateRecord[field] !== "number" ||
+      !Number.isFinite(candidateRecord[field])
+    ) {
+      throw new Error(
+        `Research job candidate.${field} must be a number`,
+      );
+    }
+  }
+}
+
 export async function runResearch(
   job: ResearchJob,
+  researchProvider: ResearchProvider = researchWithTavily,
 ): Promise<ResearchFinding> {
   if (job.agent !== "research") {
     throw new Error("Invalid agent");
@@ -63,13 +149,13 @@ export async function runResearch(
     throw new Error("Job id is required");
   }
 
-  const candidate = job.payload?.candidate;
+  const candidate = job.payload.candidate;
 
-  if (!candidate?.url) {
+  if (!candidate.url) {
     throw new Error("Candidate URL is required");
   }
 
-  if (!candidate?.title) {
+  if (!candidate.title) {
     throw new Error("Candidate title is required");
   }
 
@@ -81,7 +167,7 @@ export async function runResearch(
     "pricing",
   ].join(" ");
 
-  const tavily = await researchWithTavily(query);
+  const research = await researchProvider(query);
 
   return {
     candidate_url: candidate.url,
@@ -101,10 +187,10 @@ export async function runResearch(
     evidence_source:
       candidate.evidence_source,
     research: {
-      query: tavily.query,
-      answer: tavily.answer ?? null,
-      results_count: tavily.results.length,
-      sources: tavily.results.slice(0, 5),
+      query: research.query,
+      answer: research.answer ?? null,
+      results_count: research.results.length,
+      sources: research.results.slice(0, 5),
     },
   };
 }

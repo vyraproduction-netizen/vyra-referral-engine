@@ -1,0 +1,91 @@
+import {
+  claimOptimizerJob,
+  completeOptimizerJob,
+  createOptimizerRepeatJobs,
+  loadOptimizationSnapshots,
+  retryOptimizerJob,
+} from "./db.ts";
+import { assertOptimizerJob } from "./optimizer-job.ts";
+import { rankOptimizationDecisions } from "./optimizer.ts";
+import { authorizeWorkerRequest } from "../_shared/vyra/worker-auth.ts";
+
+Deno.serve(async (request) => {
+  const authorization = authorizeWorkerRequest(
+    request,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
+  let job = null;
+
+  try {
+    job = await claimOptimizerJob();
+
+    if (!job) {
+      return Response.json({
+        ok: true,
+        claimed: false,
+        message: "No Optimizer job available",
+      });
+    }
+
+    assertOptimizerJob(job);
+
+    const snapshots = await loadOptimizationSnapshots();
+    const decisions = rankOptimizationDecisions(snapshots);
+    const repeatJobs = await createOptimizerRepeatJobs(
+      job.id,
+      job.payload.request_id,
+      decisions,
+    );
+    const result = {
+      scope: job.payload.scope,
+      snapshots_processed: snapshots.length,
+      decisions,
+      repeat_jobs: repeatJobs,
+      actions: {
+        skip: decisions.filter((item) => item.action === "skip").length,
+        collect_more_data: decisions.filter((item) =>
+          item.action === "collect_more_data"
+        ).length,
+        improve_content: decisions.filter((item) =>
+          item.action === "improve_content"
+        ).length,
+        monitor: decisions.filter((item) => item.action === "monitor").length,
+        scale_content: decisions.filter((item) =>
+          item.action === "scale_content"
+        ).length,
+      },
+    };
+
+    await completeOptimizerJob(job.id, result);
+
+    return Response.json({
+      ok: true,
+      claimed: true,
+      job_id: job.id,
+      optimizer: result,
+    });
+  } catch (error) {
+    if (job?.id) {
+      await retryOptimizerJob(
+        job.id,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+
+    return Response.json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      { status: 500 },
+    );
+  }
+});
