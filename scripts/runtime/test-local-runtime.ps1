@@ -73,6 +73,99 @@ if ($runningContainers -notcontains $DatabaseContainer) {
 }
 Write-Pass "Local database container is running"
 
+$edgeRuntimeContainer = $DatabaseContainer -replace `
+    '^supabase_db_', `
+    'supabase_edge_runtime_'
+
+$mountsJson = & docker inspect `
+    $edgeRuntimeContainer `
+    --format '{{json .Mounts}}'
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to inspect Edge Runtime container: $edgeRuntimeContainer"
+}
+
+$mountGroups = @($mountsJson | ConvertFrom-Json)
+$functionsMount = $null
+
+foreach ($mountGroup in $mountGroups) {
+    foreach ($mountItem in $mountGroup) {
+        if (
+            [string]$mountItem.Destination -match
+            '/supabase/functions$'
+        ) {
+            $functionsMount = $mountItem
+            break
+        }
+    }
+
+    if ($functionsMount) {
+        break
+    }
+}
+
+if (-not $functionsMount -or -not $functionsMount.Source) {
+    throw "Edge Runtime functions source mount was not found"
+}
+
+$projectFunctionsRoot = Join-Path `
+    $ProjectRoot `
+    "supabase/functions"
+
+$runtimeFunctionsRoot = [string]$functionsMount.Source
+
+if (
+    $runtimeFunctionsRoot -match
+    '^/run/desktop/mnt/host/([A-Za-z])/(.+)$'
+) {
+    $runtimeDrive = $matches[1].ToUpper()
+    $runtimeRelativePath = $matches[2] -replace '/', '\'
+    $runtimeFunctionsRoot = "${runtimeDrive}:\$runtimeRelativePath"
+}
+
+$sourceMismatches = @()
+
+Get-ChildItem `
+    -LiteralPath $projectFunctionsRoot `
+    -Recurse `
+    -File `
+    -Filter "*.ts" |
+    ForEach-Object {
+        $relativePath = $_.FullName.Substring(
+            $projectFunctionsRoot.Length
+        ).TrimStart('\')
+
+        $runtimeFile = Join-Path `
+            $runtimeFunctionsRoot `
+            $relativePath
+
+        if (-not (Test-Path -LiteralPath $runtimeFile -PathType Leaf)) {
+            $sourceMismatches += "$relativePath is missing in Edge Runtime"
+            return
+        }
+
+        $repositoryHash = (
+            Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+        ).Hash
+
+        $runtimeHash = (
+            Get-FileHash -LiteralPath $runtimeFile -Algorithm SHA256
+        ).Hash
+
+        if ($repositoryHash -ne $runtimeHash) {
+            $sourceMismatches += "$relativePath differs from Edge Runtime"
+        }
+    }
+
+if ($sourceMismatches.Count -gt 0) {
+    throw (
+        "Git worktree and active Edge Runtime sources differ: " +
+        ($sourceMismatches -join "; ")
+    )
+}
+
+Write-Pass "Active Edge Runtime function sources match Git worktree"
+
 $diagnosticsUnauthorizedStatus = $null
 try {
     Invoke-WebRequest `
