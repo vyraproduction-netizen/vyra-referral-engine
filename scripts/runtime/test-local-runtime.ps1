@@ -646,6 +646,8 @@ if (-not $costStatus.ok -or
     $costStatus.budget.active_reservation_count -ne 0 -or
     $costStatus.budget.in_flight_reservation_count -ne 0 -or
     $costStatus.budget.manual_review_count -ne 0 -or
+	-not ($costStatus.manual_review_reservations -is [System.Array]) -or
+    $costStatus.manual_review_reservations.Count -ne 0 -or
     $costStatus.budget.pricing_available -ne $false -or
     $costStatus.budget.priced_observations -ne 0 -or
     -not ($costStatus.providers -is [System.Array])) {

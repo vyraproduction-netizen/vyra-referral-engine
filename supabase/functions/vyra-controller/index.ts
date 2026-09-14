@@ -561,6 +561,15 @@ export default {
                 manual_review_count: manualReviewReservations.length,
               }
               : null,
+			              manual_review_reservations: manualReviewReservations.map(
+              (reservation) => ({
+                reservation_id: reservation.id,
+                provider: reservation.provider,
+                operation: reservation.operation,
+                reserved_eur_micros: reservation.reserved_eur_micros,
+                review_reason: reservation.review_reason,
+              }),
+            ),
             providers: [...providerSummary.values()].sort((left, right) =>
               left.provider.localeCompare(right.provider)
             ),
