@@ -655,6 +655,94 @@ if (-not $costStatus.ok -or
 }
 
 Write-Pass "Controller cost_status exposes the EUR baseline and zero held reservations"
+$manualReviewResolutionJobId = [guid]::NewGuid().Guid
+$manualReviewResolutionOperation =
+    "manual_review_controller_test_$($manualReviewResolutionJobId.Replace('-', ''))"
+$manualReviewResolutionId = $null
+
+try {
+    $manualReviewInsertSql = @"
+insert into public.vyra_cost_reservations (
+  job_id,
+  provider,
+  operation,
+  reserved_eur_micros,
+  status,
+  review_reason
+)
+values (
+  '$manualReviewResolutionJobId'::uuid,
+  'openai',
+  '$manualReviewResolutionOperation',
+  10000,
+  'manual_review',
+  'test: controller resolution check'
+)
+returning id;
+"@
+
+    $manualReviewResolutionId = [string](
+        @(Invoke-LocalSql -Sql $manualReviewInsertSql) |
+            Where-Object {
+                $_ -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            } |
+            Select-Object -Last 1
+    )
+
+    if (-not $manualReviewResolutionId) {
+        throw "Test manual-review reservation was not created"
+    }
+
+    $manualReviewResolutionResponse = Invoke-RestMethod `
+        -Method Post `
+        -Uri "$SupabaseUrl/functions/v1/vyra-controller" `
+        -Headers @{ apikey = $controllerSecret } `
+        -ContentType "application/json" `
+        -Body (
+            @{
+                action = "resolve_cost_manual_review"
+                reservation_id = $manualReviewResolutionId
+                decision = "released"
+                reason = "test: controller confirmed no provider call"
+            } | ConvertTo-Json -Compress
+        )
+
+    if (
+        -not $manualReviewResolutionResponse.ok -or
+        $manualReviewResolutionResponse.action -ne
+            "resolve_cost_manual_review" -or
+        $manualReviewResolutionResponse.external_calls -ne 0 -or
+        $manualReviewResolutionResponse.reservation.status -ne "released"
+    ) {
+        throw "Controller manual-review resolution returned an invalid response"
+    }
+
+    $manualReviewAudit = [string](
+        @(Invoke-LocalSql -Sql @"
+select
+  status || '|' || coalesce(release_reason, '')
+from public.vyra_cost_reservations
+where id = '$manualReviewResolutionId'::uuid;
+"@) | Select-Object -Last 1
+    )
+
+    if (
+        $manualReviewAudit.Trim() -ne
+            "released|test: controller confirmed no provider call"
+    ) {
+        throw "Resolved reservation audit data is incorrect: $manualReviewAudit"
+    }
+}
+finally {
+    if ($manualReviewResolutionId) {
+        Invoke-LocalSql -Sql @"
+delete from public.vyra_cost_reservations
+where id = '$manualReviewResolutionId'::uuid;
+"@ | Out-Null
+    }
+}
+
+Write-Pass "Controller resolves manual_review without provider calls"
 
 try {
     $scoutResponse = Invoke-RestMethod `

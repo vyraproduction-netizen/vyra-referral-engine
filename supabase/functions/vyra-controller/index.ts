@@ -145,6 +145,14 @@ type ControllerDatabase = {
           actual_eur_micros: number;
         }[];
       };
+	        resolve_vyra_cost_manual_review: {
+        Args: {
+          p_reservation_id: string;
+          p_decision: string;
+          p_reason: string;
+        };
+        Returns: Record<string, unknown>;
+      };
       activate_program: {
         Args: {
           p_program_id: string;
@@ -189,6 +197,7 @@ const allowedActions = [
   "job_status",
   "scheduler_preview",
   "cost_status",
+  "resolve_cost_manual_review",
   "dispatch",
   "activate_program",
   "record_analytics_event",
@@ -573,6 +582,82 @@ export default {
             providers: [...providerSummary.values()].sort((left, right) =>
               left.provider.localeCompare(right.provider)
             ),
+          });
+        }
+
+        if (action === "resolve_cost_manual_review") {
+          const reservationId = typeof body.reservation_id === "string"
+            ? body.reservation_id.trim()
+            : "";
+          const decision = typeof body.decision === "string"
+            ? body.decision.trim().toLowerCase()
+            : "";
+          const reason = typeof body.reason === "string"
+            ? body.reason.trim()
+            : "";
+
+          if (
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+              .test(reservationId)
+          ) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: "reservation_id must be a UUID",
+              },
+              { status: 400 },
+            );
+          }
+
+          if (decision !== "settled" && decision !== "released") {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: "decision must be settled or released",
+              },
+              { status: 400 },
+            );
+          }
+
+          if (!reason || reason.length > 1000) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: "reason is required and must not exceed 1000 characters",
+              },
+              { status: 400 },
+            );
+          }
+
+          const { data: reservation, error: resolutionError } =
+            await controllerAdmin.rpc(
+              "resolve_vyra_cost_manual_review",
+              {
+                p_reservation_id: reservationId,
+                p_decision: decision,
+                p_reason: reason,
+              },
+            );
+
+          if (resolutionError) {
+            return Response.json(
+              {
+                ok: false,
+                action,
+                error: resolutionError.message,
+              },
+              { status: 409 },
+            );
+          }
+
+          return Response.json({
+            ok: true,
+            action,
+            external_calls: 0,
+            reservation,
           });
         }
 
