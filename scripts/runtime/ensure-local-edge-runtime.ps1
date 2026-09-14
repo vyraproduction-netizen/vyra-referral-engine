@@ -5,6 +5,7 @@ param(
 
     [string]$ContainerName =
         "supabase_edge_runtime_vyra-local-permanent",
+		[string]$LogDirectory = "C:\VYRA-BACKUPS\vyra-local\logs",
 
     [ValidateRange(5, 180)]
     [int]$RecoveryTimeoutSeconds = 45,
@@ -78,6 +79,40 @@ function Get-EndpointHealth {
     }
 }
 
+function Write-RecoveryEvent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("INFO", "WARNING", "ERROR")]
+        [string]$Level,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath $LogDirectory -PathType Container)) {
+            New-Item `
+                -ItemType Directory `
+                -Path $LogDirectory `
+                -Force | Out-Null
+        }
+
+        $logPath = Join-Path `
+            $LogDirectory `
+            "edge-runtime-recovery.log"
+
+        $timestamp = (Get-Date).ToUniversalTime().ToString("o")
+
+        Add-Content `
+            -LiteralPath $logPath `
+            -Value "[$timestamp] [$Level] $Message" `
+            -Encoding utf8
+    }
+    catch {
+        Write-Warning "Unable to write the local Edge Runtime recovery log"
+    }
+}
+
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw "Docker CLI not found"
 }
@@ -148,6 +183,10 @@ Write-Host (
     "[WARNING] Local Edge Runtime is unhealthy: {0}" -f $health.error
 ) -ForegroundColor Yellow
 
+Write-RecoveryEvent `
+    -Level "WARNING" `
+    -Message "Local diagnostics endpoint is unhealthy."
+
 if (-not $Repair) {
     Write-Host (
         "No restart was performed. Re-run with -Repair to restart only " +
@@ -157,11 +196,25 @@ if (-not $Repair) {
 }
 
 if ($containerRunning -eq "true") {
-    Write-Host "Restarting local Edge Runtime container..." -ForegroundColor Yellow
+    Write-Host (
+        "Restarting local Edge Runtime container..."
+    ) -ForegroundColor Yellow
+
+    Write-RecoveryEvent `
+        -Level "INFO" `
+        -Message "Restarting local Edge Runtime container."
+
     docker restart $ContainerName | Out-Null
 }
 else {
-    Write-Host "Starting local Edge Runtime container..." -ForegroundColor Yellow
+    Write-Host (
+        "Starting local Edge Runtime container..."
+    ) -ForegroundColor Yellow
+
+    Write-RecoveryEvent `
+        -Level "INFO" `
+        -Message "Starting local Edge Runtime container."
+
     docker start $ContainerName | Out-Null
 }
 
@@ -184,10 +237,17 @@ do {
         Write-Host (
             "[PASS] Local Edge Runtime recovered successfully"
         ) -ForegroundColor Green
+	Write-RecoveryEvent `
+        -Level "INFO" `
+        -Message "Local Edge Runtime recovered successfully."
         exit 0
     }
 }
 while ([DateTimeOffset]::UtcNow -lt $deadline)
+
+Write-RecoveryEvent `
+    -Level "ERROR" `
+    -Message "Local Edge Runtime did not recover within the recovery timeout."
 
 throw (
     "Local Edge Runtime did not recover within " +
