@@ -17,8 +17,13 @@ export type ResearchProviderName =
 export function resolveResearchProviderName(
   value: string | undefined,
 ): ResearchProviderName {
-  const normalized =
-    value?.trim().toLowerCase() ?? "tavily";
+  const normalized = value?.trim().toLowerCase();
+
+  if (!normalized) {
+    throw new Error(
+      "RESEARCH_PROVIDER must be explicitly configured as mock or tavily",
+    );
+  }
 
   if (normalized === "tavily" || normalized === "mock") {
     return normalized;

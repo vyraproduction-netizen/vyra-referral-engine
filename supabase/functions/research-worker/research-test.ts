@@ -22,10 +22,22 @@ function assert(
   }
 }
 
-Deno.test("research provider defaults to Tavily", () => {
+Deno.test("research provider requires explicit configuration", () => {
+  let errorMessage = "";
+
+  try {
+    resolveResearchProviderName(undefined);
+  } catch (error) {
+    errorMessage = error instanceof Error
+      ? error.message
+      : String(error);
+  }
+
   assert(
-    resolveResearchProviderName(undefined) === "tavily",
-    "Missing provider must default to Tavily",
+    errorMessage.includes(
+      "RESEARCH_PROVIDER must be explicitly configured",
+    ),
+    "Missing provider must be rejected",
   );
 });
 
