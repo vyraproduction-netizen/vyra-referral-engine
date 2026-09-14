@@ -52,12 +52,12 @@ $currentUser =
     [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 $recoveryArguments = (
-    "-NoProfile -ExecutionPolicy Bypass -File " +
+    "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " +
     "`"$recoveryScript`" -Repair"
 )
 
 $watchdogArguments = (
-    "-NoProfile -ExecutionPolicy Bypass -File " +
+    "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " +
     "`"$recoveryScript`" -Repair -Watchdog"
 )
 
