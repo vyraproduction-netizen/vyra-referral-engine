@@ -744,6 +744,74 @@ where id = '$manualReviewResolutionId'::uuid;
 
 Write-Pass "Controller resolves manual_review without provider calls"
 
+$manualReviewDryRunJobId = [guid]::NewGuid().Guid
+$manualReviewDryRunOperation =
+    "manual_review_cli_dry_run_$($manualReviewDryRunJobId.Replace('-', ''))"
+$manualReviewDryRunId = $null
+
+try {
+    $manualReviewDryRunId = [string](
+        @(Invoke-LocalSql -Sql @"
+insert into public.vyra_cost_reservations (
+  job_id,
+  provider,
+  operation,
+  reserved_eur_micros,
+  status,
+  review_reason
+)
+values (
+  '$manualReviewDryRunJobId'::uuid,
+  'openai',
+  '$manualReviewDryRunOperation',
+  10000,
+  'manual_review',
+  'test: CLI dry-run verification'
+)
+returning id;
+"@) |
+            Where-Object {
+                $_.Trim() -match
+                '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+            } |
+            Select-Object -Last 1
+    ).Trim()
+
+    if (-not $manualReviewDryRunId) {
+        throw "Test manual-review reservation for CLI dry run was not created"
+    }
+
+    & "$ProjectRoot\scripts\runtime\resolve-local-cost-manual-review.ps1" `
+        -ReservationId $manualReviewDryRunId `
+        -Decision released `
+        -Reason "test: CLI dry-run verification"
+
+    $manualReviewDryRunStatus = [string](
+        @(Invoke-LocalSql -Sql @"
+select status
+from public.vyra_cost_reservations
+where id = '$manualReviewDryRunId'::uuid;
+"@) | Select-Object -Last 1
+    )
+
+    if ($manualReviewDryRunStatus.Trim() -ne "manual_review") {
+        throw (
+            "CLI dry run changed the reservation status: " +
+            $manualReviewDryRunStatus
+        )
+    }
+}
+finally {
+    if ($manualReviewDryRunId) {
+        Invoke-LocalSql -Sql @"
+delete from public.vyra_cost_reservations
+where id = '$manualReviewDryRunId'::uuid;
+"@ | Out-Null
+    }
+}
+
+Write-Pass "Manual-review CLI defaults to dry run"
+
 try {
     $scoutResponse = Invoke-RestMethod `
         -Method Post `
