@@ -12,7 +12,9 @@ param(
 	[ValidateRange(10, 300)]
     [int]$DockerReadyTimeoutSeconds = 120,
 
-    [switch]$Repair
+    [switch]$Repair,
+
+	[switch]$Watchdog
 )
 
 $ErrorActionPreference = "Stop"
@@ -168,6 +170,14 @@ $containerRunning = (
 
 if ($LASTEXITCODE -ne 0) {
     throw "Edge Runtime container was not found: $ContainerName"
+}
+
+if ($Watchdog -and $containerRunning -ne "true") {
+    Write-Host (
+        "[PASS] Watchdog found Edge Runtime stopped; no start was performed"
+    ) -ForegroundColor Yellow
+
+    exit 0
 }
 
 $health = Get-EndpointHealth `

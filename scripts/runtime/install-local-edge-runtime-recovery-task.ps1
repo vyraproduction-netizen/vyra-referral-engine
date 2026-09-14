@@ -1,10 +1,15 @@
 param(
+    [ValidateRange(5, 60)]
+    [int]$WatchdogIntervalMinutes = 15,
+
     [switch]$Remove
 )
 
 $ErrorActionPreference = "Stop"
 
-$taskName = "VYRA Local Edge Runtime Recovery"
+$recoveryTaskName = "VYRA Local Edge Runtime Recovery"
+$watchdogTaskName = "VYRA Local Edge Runtime Watchdog"
+
 $recoveryScript = Join-Path `
     $PSScriptRoot `
     "ensure-local-edge-runtime.ps1"
@@ -13,24 +18,31 @@ if (-not (Test-Path -LiteralPath $recoveryScript -PathType Leaf)) {
     throw "Recovery script was not found: $recoveryScript"
 }
 
-$existingTask = Get-ScheduledTask `
-    -TaskName $taskName `
-    -ErrorAction SilentlyContinue
+$taskNames = @(
+    $recoveryTaskName,
+    $watchdogTaskName
+)
 
 if ($Remove) {
-    if ($existingTask) {
-        Unregister-ScheduledTask `
+    foreach ($taskName in $taskNames) {
+        $existingTask = Get-ScheduledTask `
             -TaskName $taskName `
-            -Confirm:$false
+            -ErrorAction SilentlyContinue
 
-        Write-Host (
-            "[PASS] Removed scheduled task: $taskName"
-        ) -ForegroundColor Green
-    }
-    else {
-        Write-Host (
-            "[PASS] Scheduled task was already absent: $taskName"
-        ) -ForegroundColor Green
+        if ($existingTask) {
+            Unregister-ScheduledTask `
+                -TaskName $taskName `
+                -Confirm:$false
+
+            Write-Host (
+                "[PASS] Removed scheduled task: $taskName"
+            ) -ForegroundColor Green
+        }
+        else {
+            Write-Host (
+                "[PASS] Scheduled task was already absent: $taskName"
+            ) -ForegroundColor Green
+        }
     }
 
     exit 0
@@ -39,18 +51,37 @@ if ($Remove) {
 $currentUser =
     [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
-$actionArguments = (
+$recoveryArguments = (
     "-NoProfile -ExecutionPolicy Bypass -File " +
     "`"$recoveryScript`" -Repair"
 )
 
-$action = New-ScheduledTaskAction `
-    -Execute "powershell.exe" `
-    -Argument $actionArguments
+$watchdogArguments = (
+    "-NoProfile -ExecutionPolicy Bypass -File " +
+    "`"$recoveryScript`" -Repair -Watchdog"
+)
 
-$trigger = New-ScheduledTaskTrigger `
+$recoveryAction = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument $recoveryArguments
+
+$watchdogAction = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument $watchdogArguments
+
+$recoveryTrigger = New-ScheduledTaskTrigger `
     -AtLogOn `
     -User $currentUser
+
+$watchdogTrigger = New-ScheduledTaskTrigger `
+    -Once `
+    -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (
+        New-TimeSpan -Minutes $WatchdogIntervalMinutes
+    ) `
+    -RepetitionDuration (
+        New-TimeSpan -Days 3650
+    )
 
 $principal = New-ScheduledTaskPrincipal `
     -UserId $currentUser `
@@ -58,12 +89,16 @@ $principal = New-ScheduledTaskPrincipal `
     -RunLevel Limited
 
 $settings = New-ScheduledTaskSettingsSet `
-    -StartWhenAvailable
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (
+        New-TimeSpan -Minutes 5
+    )
 
 Register-ScheduledTask `
-    -TaskName $taskName `
-    -Action $action `
-    -Trigger $trigger `
+    -TaskName $recoveryTaskName `
+    -Action $recoveryAction `
+    -Trigger $recoveryTrigger `
     -Principal $principal `
     -Settings $settings `
     -Description (
@@ -71,10 +106,18 @@ Register-ScheduledTask `
     ) `
     -Force | Out-Null
 
-$task = Get-ScheduledTask -TaskName $taskName
+Register-ScheduledTask `
+    -TaskName $watchdogTaskName `
+    -Action $watchdogAction `
+    -Trigger $watchdogTrigger `
+    -Principal $principal `
+    -Settings $settings `
+    -Description (
+        "Checks running local VYRA Edge Runtime every " +
+        "$WatchdogIntervalMinutes minutes without starting a stopped container."
+    ) `
+    -Force | Out-Null
 
-Write-Host (
-    "[PASS] Scheduled task installed: {0} ({1})" -f
-    $task.TaskName,
-    $task.State
-) -ForegroundColor Green
+Get-ScheduledTask `
+    -TaskName $taskNames |
+    Select-Object TaskName, State, TaskPath
