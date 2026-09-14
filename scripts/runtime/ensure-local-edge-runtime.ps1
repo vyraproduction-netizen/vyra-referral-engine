@@ -8,6 +8,8 @@ param(
 
     [ValidateRange(5, 180)]
     [int]$RecoveryTimeoutSeconds = 45,
+	[ValidateRange(10, 300)]
+    [int]$DockerReadyTimeoutSeconds = 120,
 
     [switch]$Repair
 )
@@ -79,6 +81,32 @@ function Get-EndpointHealth {
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     throw "Docker CLI not found"
 }
+
+$dockerReady = $false
+$dockerDeadline = [DateTimeOffset]::UtcNow.AddSeconds(
+    $DockerReadyTimeoutSeconds
+)
+
+do {
+    docker info 2>$null | Out-Null
+
+    if ($LASTEXITCODE -eq 0) {
+        $dockerReady = $true
+        break
+    }
+
+    Start-Sleep -Seconds 3
+}
+while ([DateTimeOffset]::UtcNow -lt $dockerDeadline)
+
+if (-not $dockerReady) {
+    throw (
+        "Docker Engine did not become ready within " +
+        "$DockerReadyTimeoutSeconds seconds"
+    )
+}
+
+$uri = [Uri]$SupabaseUrl
 
 $uri = [Uri]$SupabaseUrl
 if (
