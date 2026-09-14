@@ -41,6 +41,11 @@ export type CostProtectedProviderCallResult<T> = {
   reusedCheckpoint: boolean;
 };
 
+export type CostRpcInvoker = (
+  functionName: string,
+  args: Record<string, unknown>,
+) => Promise<unknown>;
+
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("VYRA cost RPC returned an invalid response");
@@ -165,9 +170,10 @@ async function reserveCostBudget(
   provider: CostProvider,
   operation: CostOperation,
   reservedEurMicros: number,
+  rpc: CostRpcInvoker = callCostRpc,
 ): Promise<Reservation> {
   return readReservation(
-    await callCostRpc(
+    await rpc(
       "reserve_vyra_cost_budget",
       {
         p_job_id: jobId,
@@ -182,9 +188,10 @@ async function reserveCostBudget(
 
 async function beginProviderCall(
   reservationId: string,
+  rpc: CostRpcInvoker = callCostRpc,
 ): Promise<Reservation> {
   return readReservation(
-    await callCostRpc(
+    await rpc(
       "begin_vyra_cost_provider_call",
       { p_reservation_id: reservationId },
     ),
@@ -195,9 +202,10 @@ async function beginProviderCall(
 async function checkpointProviderResult(
   reservationId: string,
   providerResult: unknown,
+  rpc: CostRpcInvoker = callCostRpc,
 ): Promise<Reservation> {
   return readReservation(
-    await callCostRpc(
+    await rpc(
       "checkpoint_vyra_cost_provider_result",
       {
         p_reservation_id: reservationId,
@@ -210,9 +218,10 @@ async function checkpointProviderResult(
 
 async function loadProviderResult(
   reservationId: string,
+  rpc: CostRpcInvoker = callCostRpc,
 ): Promise<ProviderCheckpoint> {
   return readProviderCheckpoint(
-    await callCostRpc(
+    await rpc(
       "load_vyra_cost_provider_result",
       { p_reservation_id: reservationId },
     ),
@@ -222,8 +231,9 @@ async function loadProviderResult(
 async function markManualReview(
   reservationId: string,
   reason: string,
+  rpc: CostRpcInvoker = callCostRpc,
 ): Promise<void> {
-  await callCostRpc(
+  await rpc(
     "mark_vyra_cost_reservation_manual_review",
     {
       p_reservation_id: reservationId,
@@ -254,16 +264,28 @@ export function readPositiveEurMicros(
 export async function runCostProtectedProviderCall<T>(
   options: CostProtectedProviderCall<T>,
 ): Promise<CostProtectedProviderCallResult<T>> {
+  return await runCostProtectedProviderCallWithRpc(
+    options,
+    callCostRpc,
+  );
+}
+
+export async function runCostProtectedProviderCallWithRpc<T>(
+  options: CostProtectedProviderCall<T>,
+  rpc: CostRpcInvoker,
+): Promise<CostProtectedProviderCallResult<T>> {
   const reservation = await reserveCostBudget(
     options.jobId,
     options.provider,
     options.operation,
     options.reservedEurMicros,
+    rpc,
   );
 
   if (reservation.status === "settled") {
     const checkpoint = await loadProviderResult(
       reservation.id,
+      rpc,
     );
 
     return {
@@ -283,6 +305,7 @@ export async function runCostProtectedProviderCall<T>(
     await markManualReview(
       reservation.id,
       "A retry found an interrupted paid provider call",
+      rpc,
     );
 
     throw new Error(
@@ -296,7 +319,10 @@ export async function runCostProtectedProviderCall<T>(
     );
   }
 
-  const started = await beginProviderCall(reservation.id);
+  const started = await beginProviderCall(
+    reservation.id,
+    rpc,
+  );
 
   if (started.status !== "in_flight") {
     throw new Error(
@@ -315,6 +341,7 @@ export async function runCostProtectedProviderCall<T>(
       await markManualReview(
         reservation.id,
         `Provider call failed after dispatch: ${reason}`,
+        rpc,
       );
     } catch (reviewError) {
       console.error(
@@ -328,10 +355,32 @@ export async function runCostProtectedProviderCall<T>(
     );
   }
 
-  await checkpointProviderResult(
-    reservation.id,
-    result,
-  );
+  try {
+    await checkpointProviderResult(
+      reservation.id,
+      result,
+      rpc,
+    );
+  } catch (error) {
+    const reason = errorMessage(error);
+
+    try {
+      await markManualReview(
+        reservation.id,
+        `Provider result checkpoint failed after dispatch: ${reason}`,
+        rpc,
+      );
+    } catch (reviewError) {
+      console.error(
+        "VYRA provider-checkpoint review marker failed",
+        reviewError,
+      );
+    }
+
+    throw new Error(
+      `Paid provider result was retained for manual review: ${reason}`,
+    );
+  }
 
   return {
     result,
