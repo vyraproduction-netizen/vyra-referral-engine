@@ -4,9 +4,6 @@ import type {
 import type {
   ResearchProvider,
 } from "./research-provider.ts";
-import {
-  researchWithTavily,
-} from "./tavily-research.ts";
 
 export type ResearchFinding = {
   candidate_url: string;
@@ -135,7 +132,7 @@ export function assertResearchJob(
 
 export async function runResearch(
   job: ResearchJob,
-  researchProvider: ResearchProvider = researchWithTavily,
+  researchProvider: ResearchProvider,
 ): Promise<ResearchFinding> {
   if (job.agent !== "research") {
     throw new Error("Invalid agent");
