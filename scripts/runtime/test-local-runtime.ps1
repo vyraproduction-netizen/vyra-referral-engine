@@ -641,13 +641,18 @@ if (-not $costStatus.ok -or
     $costStatus.budget.currency -ne "EUR" -or
     $costStatus.budget.mode -ne "observe" -or
     $costStatus.budget.daily_limit_eur_micros -ne 450000 -or
+	$costStatus.budget.budget_committed_eur_micros -ne 0 -or
+    $costStatus.budget.available_eur_micros -ne 450000 -or
+    $costStatus.budget.active_reservation_count -ne 0 -or
+    $costStatus.budget.in_flight_reservation_count -ne 0 -or
+    $costStatus.budget.manual_review_count -ne 0 -or
     $costStatus.budget.pricing_available -ne $false -or
     $costStatus.budget.priced_observations -ne 0 -or
     -not ($costStatus.providers -is [System.Array])) {
     throw "Controller cost_status returned an invalid observe-only response"
 }
 
-Write-Pass "Controller cost_status is read-only and exposes the EUR observe baseline"
+Write-Pass "Controller cost_status exposes the EUR baseline and zero held reservations"
 
 try {
     $scoutResponse = Invoke-RestMethod `
