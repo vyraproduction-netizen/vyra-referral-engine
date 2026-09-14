@@ -483,3 +483,86 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "VYRA non-serializable provider result requires manual review",
+  async () => {
+    const reservationId = "00000000-0000-4000-8000-000000000761";
+    const rpcCalls: string[] = [];
+
+    const rpc: CostRpcInvoker = async (functionName) => {
+      rpcCalls.push(functionName);
+
+      if (functionName === "reserve_vyra_cost_budget") {
+        return {
+          id: reservationId,
+          status: "reserved",
+        };
+      }
+
+      if (functionName === "begin_vyra_cost_provider_call") {
+        return {
+          id: reservationId,
+          status: "in_flight",
+        };
+      }
+
+      if (
+        functionName ===
+          "mark_vyra_cost_reservation_manual_review"
+      ) {
+        return {
+          id: reservationId,
+          status: "manual_review",
+        };
+      }
+
+      throw new Error(`Unexpected RPC: ${functionName}`);
+    };
+
+    const circularResult: { self?: unknown } = {};
+    circularResult.self = circularResult;
+
+    let errorMessage = "";
+
+    try {
+      await runCostProtectedProviderCallWithRpc(
+        {
+          jobId: "00000000-0000-4000-8000-000000000760",
+          provider: "openai",
+          operation: "content_draft",
+          reservedEurMicros: 10_000,
+          execute: async () => circularResult,
+          restore: (value) => value as { self?: unknown },
+        },
+        rpc,
+      );
+    } catch (error) {
+      errorMessage = error instanceof Error
+        ? error.message
+        : String(error);
+    }
+
+    if (
+      !errorMessage.includes(
+        "Paid provider result was retained for manual review",
+      )
+    ) {
+      throw new Error(
+        "Non-serializable result did not report manual-review retention",
+      );
+    }
+
+    const expectedCalls = [
+      "reserve_vyra_cost_budget",
+      "begin_vyra_cost_provider_call",
+      "mark_vyra_cost_reservation_manual_review",
+    ];
+
+    if (rpcCalls.join("|") !== expectedCalls.join("|")) {
+      throw new Error(
+        `Unexpected serialization-failure RPC sequence: ${rpcCalls.join(", ")}`,
+      );
+    }
+  },
+);
