@@ -48,25 +48,33 @@ if ($Remove) {
     exit 0
 }
 
+$hiddenLauncher = Join-Path `
+    $PSScriptRoot `
+    "run-local-edge-runtime-hidden.vbs"
+
+if (-not (Test-Path -LiteralPath $hiddenLauncher -PathType Leaf)) {
+    throw "Hidden launcher was not found: $hiddenLauncher"
+}
+
 $currentUser =
     [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
 $recoveryArguments = (
-    "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " +
-    "`"$recoveryScript`" -Repair"
+    "//B //NoLogo " +
+    "`"$hiddenLauncher`""
 )
 
 $watchdogArguments = (
-    "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File " +
-    "`"$recoveryScript`" -Repair -Watchdog"
+    "//B //NoLogo " +
+    "`"$hiddenLauncher`" watchdog"
 )
 
 $recoveryAction = New-ScheduledTaskAction `
-    -Execute "powershell.exe" `
+    -Execute "wscript.exe" `
     -Argument $recoveryArguments
 
 $watchdogAction = New-ScheduledTaskAction `
-    -Execute "powershell.exe" `
+    -Execute "wscript.exe" `
     -Argument $watchdogArguments
 
 $recoveryTrigger = New-ScheduledTaskTrigger `
