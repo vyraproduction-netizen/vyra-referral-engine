@@ -1,9 +1,14 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidatePattern('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$')]
+    [ValidatePattern(
+        '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'
+    )]
     [string]$JobId,
 
     [string]$SupabaseUrl = "http://127.0.0.1:55321",
+
+    [string]$DatabaseContainer =
+        "supabase_db_vyra-local-permanent",
 
     [ValidateRange(1, 300)]
     [int]$IntervalSeconds = 2,
@@ -16,7 +21,68 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-LocalJob {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ContainerName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Id
+    )
+
+    $query = @"
+BEGIN;
+SET TRANSACTION READ ONLY;
+
+select row_to_json(job)::text
+from (
+    select
+        id,
+        agent,
+        task_type,
+        status,
+        attempts,
+        max_attempts,
+        next_run_at,
+        error_message,
+        started_at,
+        completed_at
+    from public.jobs
+    where id = '$Id'::uuid
+) as job;
+
+COMMIT;
+"@
+
+    $json = & docker exec `
+        $ContainerName `
+        psql `
+        -U postgres `
+        -d postgres `
+        -X `
+        -q `
+        -t `
+        -A `
+        -v ON_ERROR_STOP=1 `
+        -c $query
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Local database query failed"
+    }
+
+    $json = $json |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -First 1
+
+    if (-not $json) {
+        return $null
+    }
+
+    return $json | ConvertFrom-Json
+}
+
 $uri = $null
+
 if (-not [System.Uri]::TryCreate(
     $SupabaseUrl,
     [System.UriKind]::Absolute,
@@ -43,7 +109,10 @@ if (-not $isLocalHost) {
         "gyqldlwromvmldxyhoip.supabase.co"
     )
 
-    if ($uri.Scheme -ne "https" -or $uri.Host -notin $trustedRemoteHosts) {
+    if (
+        $uri.Scheme -ne "https" -or
+        $uri.Host -notin $trustedRemoteHosts
+    ) {
         throw (
             "Remote job watching is allowed only for the configured " +
             "HTTPS Supabase production host."
@@ -54,66 +123,48 @@ if (-not $isLocalHost) {
 $baseUrl = $SupabaseUrl.TrimEnd("/")
 $method = "Get"
 $requestBody = $null
+$endpoint = $null
+$headers = $null
 
-if ($isLocalHost) {
-    $escapedJobId = [System.Uri]::EscapeDataString($JobId)
-    $select = @(
-        "id",
-        "agent",
-        "task_type",
-        "status",
-        "attempts",
-        "max_attempts",
-        "next_run_at",
-        "error_message",
-        "started_at",
-        "completed_at"
-    ) -join ","
-
-    $endpoint = (
-        "$baseUrl/rest/v1/jobs" +
-        "?id=eq.$escapedJobId" +
-        "&select=$select"
-    )
-    $headers = @{ "Accept-Profile" = "public" }
-
-    $publishableKey = $env:SUPABASE_PUBLISHABLE_KEY
-    if (-not $publishableKey) {
-        $publishableKey = $env:SUPABASE_ANON_KEY
-    }
-    if ($publishableKey) {
-        $headers["apikey"] = $publishableKey
-        $headers["Authorization"] = "Bearer $publishableKey"
-    }
-}
-else {
+if (-not $isLocalHost) {
     $controllerSecret = $env:VYRA_CONTROLLER_SECRET
+
     if (-not $controllerSecret) {
         $secureSecret = Read-Host `
             "Enter VYRA_CONTROLLER_SECRET for the remote status request" `
             -AsSecureString
-        $secretPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR(
-            $secureSecret
-        )
+
+        $secretPointer =
+            [Runtime.InteropServices.Marshal]::SecureStringToBSTR(
+                $secureSecret
+            )
+
         try {
-            $controllerSecret = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
+            $controllerSecret =
+                [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
+                    $secretPointer
+                )
+        }
+        finally {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR(
                 $secretPointer
             )
         }
-        finally {
-            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($secretPointer)
-        }
     }
+
     if (-not $controllerSecret) {
         throw "VYRA_CONTROLLER_SECRET is required for remote job watching."
     }
 
     $endpoint = "$baseUrl/functions/v1/vyra-controller"
+
     $headers = @{
         apikey = $controllerSecret
         "Content-Type" = "application/json"
     }
+
     $method = "Post"
+
     $requestBody = @{
         action = "job_status"
         job_id = $JobId
@@ -125,17 +176,19 @@ Write-Host "Target: $($uri.Scheme)://$($uri.Authority)"
 Write-Host "JobId: $JobId"
 Write-Host "Mode: READ ONLY"
 
+if ($isLocalHost) {
+    Write-Host "Source: local PostgreSQL container"
+}
+
 $successfulReads = 0
 $readErrors = 0
 
 for ($i = 1; $i -le $Iterations; $i++) {
     try {
         if ($isLocalHost) {
-            $rows = Invoke-RestMethod `
-                -Uri $endpoint `
-                -Headers $headers `
-                -Method $method
-            $row = $rows | Select-Object -First 1
+            $row = Get-LocalJob `
+                -ContainerName $DatabaseContainer `
+                -Id $JobId
         }
         else {
             $response = Invoke-RestMethod `
@@ -144,13 +197,17 @@ for ($i = 1; $i -le $Iterations; $i++) {
                 -Method $method `
                 -ContentType "application/json" `
                 -Body $requestBody
+
             if (-not $response.ok) {
                 throw "Remote controller returned ok=false"
             }
+
             $row = $response.job
         }
 
         if (-not $row) {
+            $successfulReads++
+
             Write-Host (
                 "[{0}/{1}] Job not found" -f $i, $Iterations
             ) -ForegroundColor Yellow
@@ -163,6 +220,7 @@ for ($i = 1; $i -le $Iterations; $i++) {
                 $nextRun = [DateTimeOffset]::Parse(
                     $row.next_run_at
                 ).ToUniversalTime()
+
                 $ready = $nextRun -le [DateTimeOffset]::UtcNow
             }
 
@@ -189,6 +247,7 @@ for ($i = 1; $i -le $Iterations; $i++) {
     }
     catch {
         $readErrors++
+
         Write-Host (
             "[{0}/{1}] READ ERROR: {2}" -f
             $i,
