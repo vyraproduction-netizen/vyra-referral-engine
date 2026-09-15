@@ -346,6 +346,7 @@ Deno.serve(async (req: Request) => {
             "VYRA_TAVILY_RESERVATION_EUR_MICROS",
           ),
           execute: () => researchProvider.search({
+            request_id: payload.request_id,
             query: payload.topic_seed,
             language: payload.language,
             region: payload.region,
@@ -361,6 +362,7 @@ Deno.serve(async (req: Request) => {
       };
     } else {
       researchResults = await researchProvider.search({
+        request_id: payload.request_id,
         query: payload.topic_seed,
         language: payload.language,
         region: payload.region,

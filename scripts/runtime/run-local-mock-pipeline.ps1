@@ -181,10 +181,11 @@ if (-not $controllerSecret) {
 }
 
 $scoutJobId = [guid]::NewGuid().Guid
-$runtimeTopicSeed = "$TopicSeed $scoutJobId"
+$runtimeTopicSeed = $TopicSeed
 $runtimeProgramUrl = (
     "https://example.local/research/ai-tools-pricing/" +
-    [uri]::EscapeDataString($runtimeTopicSeed)
+    [uri]::EscapeDataString($runtimeTopicSeed) +
+    "?run=$scoutJobId"
 )
 
 $scoutPayload = @{

@@ -9,19 +9,20 @@ export class LocalMockResearchProvider implements ResearchProvider {
     request: ResearchRequest,
   ): Promise<ResearchResult[]> {
     const query = request.query.trim();
+    const runId = encodeURIComponent(request.request_id);
 
     return [
-	  {
-	    title:
-		  `Professional AI tools with pricing plans for ${query}`,
+      {
+        title:
+          `Professional AI tools with pricing plans for ${query}`,
         snippet:
           `Local mock business software subscription with a free trial ` +
           `for researching "${query}" in ${request.region}.`,
-	    url:
-		  `https://example.local/research/ai-tools-pricing/` +
-		  `${encodeURIComponent(query)}`,
-	    source: "local-mock",
-	  },
+        url:
+          `https://example.local/research/ai-tools-pricing/` +
+          `${encodeURIComponent(query)}?run=${runId}`,
+        source: "local-mock",
+      },
       {
         title: `How to improve ${query}`,
         snippet:
