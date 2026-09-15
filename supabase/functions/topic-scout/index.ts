@@ -36,7 +36,8 @@ import {
   assertTopicScoutLedgerJob,
 } from "./ledger-job-binding.ts";
 const researchProviderType =
-  Deno.env.get("RESEARCH_PROVIDER") ?? "mock";
+  Deno.env.get("RESEARCH_PROVIDER")?.trim().toLowerCase() ??
+    "mock";
 
 function createResearchProvider() {
   if (researchProviderType === "tavily") {
@@ -51,7 +52,13 @@ function createResearchProvider() {
     return new TavilyResearchProvider(apiKey);
   }
 
-  return new LocalMockResearchProvider();
+  if (researchProviderType === "mock") {
+    return new LocalMockResearchProvider();
+  }
+
+  throw new Error(
+    `Unsupported RESEARCH_PROVIDER: ${researchProviderType}`,
+  );
 }
 
 const researchProvider = createResearchProvider();
