@@ -103,6 +103,23 @@ export function assertContentJob(
   }
 }
 
+function createSearchSuffix(url: URL): string {
+  if (!url.search) {
+    return "";
+  }
+
+  let hash = 0xcbf29ce484222325n;
+  const prime = 0x100000001b3n;
+  const mask = 0xffffffffffffffffn;
+
+  for (const character of url.search) {
+    hash ^= BigInt(character.codePointAt(0) ?? 0);
+    hash = (hash * prime) & mask;
+  }
+
+  return `-${hash.toString(36)}`;
+}
+
 export function createContentSlug(
   candidateUrl: string,
   language: string,
@@ -123,7 +140,7 @@ export function createContentSlug(
     throw new Error("Unable to create content slug");
   }
 
-  return `${source}-${languagePart}`;
+  return `${source}-${languagePart}${createSearchSuffix(url)}`;
 }
 
 export async function runContent(

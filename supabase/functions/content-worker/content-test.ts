@@ -94,6 +94,34 @@ Deno.test(
 );
 
 Deno.test(
+  "createContentSlug keeps query identity without exposing it",
+  () => {
+    const first = createContentSlug(
+      "https://example.local/tools/image-enhancer?run=00000000-0000-4000-8000-000000000001",
+      "ru",
+    );
+    const repeated = createContentSlug(
+      "https://example.local/tools/image-enhancer?run=00000000-0000-4000-8000-000000000001",
+      "ru",
+    );
+    const different = createContentSlug(
+      "https://example.local/tools/image-enhancer?run=00000000-0000-4000-8000-000000000002",
+      "ru",
+    );
+
+    if (
+      first !== repeated ||
+      first === different ||
+      first.includes("00000000-0000-4000-8000-000000000001")
+    ) {
+      throw new Error(
+        "Query identity must be stable, distinct, and opaque in a slug",
+      );
+    }
+  },
+);
+
+Deno.test(
   "content worker creates a deterministic draft",
   async () => {
     const job = createJob();
