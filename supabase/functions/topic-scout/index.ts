@@ -35,9 +35,13 @@ import {
 import {
   assertTopicScoutLedgerJob,
 } from "./ledger-job-binding.ts";
+import {
+  resolveTopicScoutResearchProviderName,
+} from "./research-provider-config.ts";
 const researchProviderType =
-  Deno.env.get("RESEARCH_PROVIDER")?.trim().toLowerCase() ??
-    "mock";
+  resolveTopicScoutResearchProviderName(
+    Deno.env.get("RESEARCH_PROVIDER"),
+  );
 
 function createResearchProvider() {
   if (researchProviderType === "tavily") {
