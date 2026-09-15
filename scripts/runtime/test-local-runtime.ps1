@@ -4442,4 +4442,27 @@ if ($contentRevisionRemaining.Trim() -ne "0|0|0|0") {
 }
 
 Write-Pass "Content Revision Worker diagnostic rows cleaned up"
+$watcherScript = Join-Path `
+    $ProjectRoot `
+    "scripts\runtime\watch-job.ps1"
+
+if (-not (Test-Path -LiteralPath $watcherScript -PathType Leaf)) {
+    throw "Local job watcher script was not found: $watcherScript"
+}
+
+$watcherJobId = "00000000-0000-4000-8000-000000000799"
+
+& powershell.exe `
+    -NoProfile `
+    -NonInteractive `
+    -ExecutionPolicy Bypass `
+    -File $watcherScript `
+    -JobId $watcherJobId `
+    -Iterations 1
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Local job watcher read-only check failed"
+}
+
+Write-Pass "Local job watcher read-only check passed"
 Write-Host "RESULT: PASS" -ForegroundColor Green
