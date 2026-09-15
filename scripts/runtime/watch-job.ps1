@@ -3,7 +3,7 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$')]
     [string]$JobId,
 
-    [string]$SupabaseUrl = "http://127.0.0.1:54321",
+    [string]$SupabaseUrl = "http://127.0.0.1:55321",
 
     [ValidateRange(1, 300)]
     [int]$IntervalSeconds = 2,
