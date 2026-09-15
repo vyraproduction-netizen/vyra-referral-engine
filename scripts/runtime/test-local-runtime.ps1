@@ -534,8 +534,12 @@ Write-Pass "Controller job_status safely reports a missing job"
 $scoutJobId = [guid]::NewGuid().Guid
 $programId = "00000000-0000-0000-0000-000000000000"
 $referralLinkId = "00000000-0000-0000-0000-000000000000"
+$runtimeTopicSeed =
+    "image enhancement $scoutJobId"
+
 $runtimeProgramUrl =
-    "https://example.local/runtime-program/$scoutJobId"
+    "https://example.local/research/ai-tools-pricing/" +
+    [uri]::EscapeDataString($runtimeTopicSeed)
 $scoutInsertSql = @"
 insert into public.jobs (
   id,
@@ -556,7 +560,7 @@ values (
     "request_id":"$scoutJobId",
     "language":"ru",
     "region":"EU",
-    "topic_seed":"image enhancement",
+    "topic_seed":"$runtimeTopicSeed",
     "constraints":{
       "min_score":0.7,
       "max_topics":3
@@ -862,35 +866,27 @@ where agent = 'research'
     $researchJobId = $diagnosticResearchJobParts[1]
     Write-Pass "Controller Topic Scout dispatch created a research job"
 
-    $promoteResearchSql = @"
-update public.jobs
-set payload = jsonb_set(
-  jsonb_set(
-    payload,
-    '{recommended_action}',
-    to_jsonb('investigate_referral_program'::text),
-    true
-  ),
-  '{candidate,url}',
-  to_jsonb('$runtimeProgramUrl'::text),
-  true
-)
-where id = '$researchJobId'::uuid;
-
-select payload->>'recommended_action'
+$researchJobCandidate = [string](
+    @(Invoke-LocalSql -Sql @"
+select
+  coalesce(payload->>'recommended_action', '') || '|' ||
+  coalesce(payload->'candidate'->>'url', '')
 from public.jobs
 where id = '$researchJobId'::uuid;
-"@
+"@) | Select-Object -Last 1
+)
 
-    $promotionResult = Invoke-LocalSql -Sql $promoteResearchSql
-    if (
-        $promotionResult[-1].Trim() -ne
-            "investigate_referral_program"
-    ) {
-        throw "Unable to promote the diagnostic research job"
-    }
+if (
+    $researchJobCandidate.Trim() -ne
+        "investigate_referral_program|$runtimeProgramUrl"
+) {
+    throw (
+        "Topic Scout did not create the expected " +
+        "deterministic referral candidate: $researchJobCandidate"
+    )
+}
 
-    Write-Pass "Diagnostic research job promoted to a content candidate"
+Write-Pass "Topic Scout created a deterministic referral candidate"
 
     $workerResponse = Invoke-RestMethod `
         -Method Post `
@@ -1141,9 +1137,12 @@ where id = '$qaJobId'::uuid;
     if ($qaResponse.qa.status -ne "approved") {
         throw "Controller QA dispatch did not approve the content"
     }
-    if ([decimal]$qaResponse.qa.score -ne [decimal]1) {
-        throw "Controller QA dispatch returned an unexpected score"
-    }
+	if ([decimal]$qaResponse.qa.score -lt [decimal]0.8) {
+		throw (
+			"Controller QA dispatch returned a score below " +
+			"the publish threshold: $($qaResponse.qa.score)"
+		)
+	}
     if ($qaResponse.reused) {
         throw "Controller QA dispatch unexpectedly reused a result"
     }
@@ -1488,7 +1487,7 @@ select
   j.status || '|' ||
   j.attempts || '|' ||
   c.status || '|' ||
-  (c.qa_score = 1) || '|' ||
+  (coalesce(c.qa_score, 0) >= 0.8) || '|' ||
   (j.result->>'content_id' = c.id::text)
 from public.jobs j
 join public.content c
