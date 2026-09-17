@@ -241,7 +241,7 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
     const headers = {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${this.#token}`,
-      "x-github-api-version": "2026-03-10",
+      "x-github-api-version": "2022-11-28",
     };
 
     const lookup = await this.#fetch(
