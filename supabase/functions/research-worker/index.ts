@@ -1,14 +1,53 @@
 import {
   claimResearchJob,
   completeResearchJob,
+  createResearchContentJob,
   retryResearchJob,
+  saveResearchProgramCandidate,
+  saveResearchReferralLink,
+  observeTavilyResearchUsage,
 } from "./db.ts";
 
 import {
+  createResearchProvider,
+  resolveResearchProviderName,
+} from "./research-provider.ts";
+import {
+  assertResearchJob,
   runResearch,
+  type ResearchFinding,
 } from "./research.ts";
+import {
+  resolveResearchExpandedTopicLineage,
+} from "./research-expanded-topic-lineage.ts";
+import {
+  authorizeWorkerRequest,
+} from "../_shared/vyra/worker-auth.ts";
+import {
+  readPositiveEurMicros,
+  runCostProtectedProviderCall,
+} from "../_shared/vyra/cost-provider-checkpoint.ts";
 
-Deno.serve(async () => {
+const researchProviderName = resolveResearchProviderName(
+  Deno.env.get("RESEARCH_PROVIDER"),
+);
+const researchProvider = createResearchProvider(
+  researchProviderName,
+);
+
+Deno.serve(async (request) => {
+  const authorization = authorizeWorkerRequest(
+    request,
+    Deno.env.get("VYRA_WORKER_SECRET"),
+  );
+
+  if (!authorization.ok) {
+    return Response.json(
+      { ok: false, error: authorization.error },
+      { status: authorization.status },
+    );
+  }
+
   let job = null;
 
   try {
@@ -22,29 +61,112 @@ Deno.serve(async () => {
       });
     }
 
-    const researchResult = await runResearch(job);
+    assertResearchJob(job);
+	const researchJob = job;
+
+    const topicExpansion =
+      resolveResearchExpandedTopicLineage(job);
+
+	let researchResult: ResearchFinding;
+	let costCheckpoint: {
+	  reservationId: string;
+	  reusedCheckpoint: boolean;
+	} | null = null;
+
+	if (researchProviderName === "tavily") {
+	  const protectedCall =
+		await runCostProtectedProviderCall({
+		  jobId: job.id,
+		  provider: "tavily",
+		  operation: "research_worker_search",
+		  reservedEurMicros: readPositiveEurMicros(
+			"VYRA_TAVILY_RESERVATION_EUR_MICROS",
+		  ),
+		        execute: () => runResearch(
+        researchJob,
+        researchProvider,
+      ),
+		  restore: (value) => value as ResearchFinding,
+		});
+
+	  researchResult = protectedCall.result;
+	  costCheckpoint = {
+		reservationId: protectedCall.reservationId,
+		reusedCheckpoint: protectedCall.reusedCheckpoint,
+	  };
+	} else {
+	  researchResult = await runResearch(
+		job,
+		researchProvider,
+	  );
+	}
+
+    const costObservation = researchProviderName === "tavily"
+      ? await observeTavilyResearchUsage(job.id, {
+        search_depth: "advanced",
+        max_results: 5,
+        include_answer: true,
+        results_count: researchResult.research.results_count,
+      })
+      : null;
+
+    const program =
+      await saveResearchProgramCandidate(
+        job,
+        researchResult,
+      );
+
+    const referralLink =
+      await saveResearchReferralLink(program);
+
+    const contentJob = await createResearchContentJob(
+      job,
+      researchResult,
+      topicExpansion,
+    );
 
     const completion = await completeResearchJob(
       job.id,
-      researchResult,
+      {
+        ...researchResult,
+        program,
+        referral_link: referralLink,
+        ...(costObservation ? { cost_observation: costObservation } : {}),
+		        ...(costCheckpoint
+          ? {
+            cost_checkpoint: {
+              reservation_id: costCheckpoint.reservationId,
+              reused: costCheckpoint.reusedCheckpoint,
+            },
+          }
+          : {}),
+        ...(topicExpansion
+          ? { topic_expansion: topicExpansion }
+          : {}),
+      },
     );
 
     return Response.json({
       ok: true,
       claimed: true,
       job_id: job.id,
+      provider: researchProviderName,
       candidate_url:
-        job.payload?.candidate?.url ?? null,
+        job.payload.candidate.url,
       research: {
         results_count:
           researchResult.research.results_count,
         answer_present:
           Boolean(researchResult.research.answer),
       },
+      program,
+      referral_link: referralLink,
+      content_job: contentJob,
+      topic_expansion: topicExpansion,
       completion,
     });
   } catch (error) {
-	if (job?.id) {
+    if (job?.id) {
       await retryResearchJob(
         job.id,
         error instanceof Error
@@ -52,9 +174,11 @@ Deno.serve(async () => {
           : String(error),
       );
     }
+
     return Response.json(
       {
         ok: false,
+        provider: researchProviderName,
         error:
           error instanceof Error
             ? error.message
