@@ -1,3 +1,5 @@
+import { GithubPagesPublisherProvider } from "./github-pages-publisher.ts";
+
 export type PublishRequest = {
   content_id: string;
   language: string;
@@ -44,6 +46,10 @@ export function createPublisherProvider(
 ): PublisherProvider {
   if (name === "mock") {
     return new MockPublisherProvider();
+  }
+
+  if (name === "github_pages") {
+    return new GithubPagesPublisherProvider();
   }
 
   if (!name) {
