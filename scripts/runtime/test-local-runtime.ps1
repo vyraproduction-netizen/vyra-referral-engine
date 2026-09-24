@@ -1,4 +1,5 @@
 param(
+    [string]$RuntimeRoot = "C:\VYRA-LOCAL",
     [string]$ProjectRoot = "C:\VYRA-GITHUB",
     [string]$SupabaseUrl = "http://127.0.0.1:55321",
     [string]$DatabaseContainer = "supabase_db_vyra-local-permanent"
@@ -242,7 +243,7 @@ if ($rpcOutput[-1].Trim() -ne "0") {
 }
 Write-Pass "Queue claim and completion contract passed with rollback"
 
-$topicScoutEnvPath = Join-Path $ProjectRoot "supabase/functions/.env"
+$topicScoutEnvPath = Join-Path $RuntimeRoot "supabase/functions/.env"
 $topicScoutWorkerSetting = Get-Content -LiteralPath $topicScoutEnvPath |
     Where-Object { $_ -match '^\s*VYRA_WORKER_SECRET\s*=' } |
     Select-Object -Last 1
@@ -362,7 +363,7 @@ where payload->>'request_id' = '$requestId';
 Write-Pass "Diagnostic rows cleaned up"
 
 $localEnvPath = Join-Path `
-    $ProjectRoot `
+    $RuntimeRoot `
     "supabase/functions/.env"
 
 if (-not (Test-Path -LiteralPath $localEnvPath -PathType Leaf)) {
@@ -643,7 +644,7 @@ if (-not $costStatus.ok -or
     $costStatus.external_calls -ne 0 -or
     -not $costStatus.budget -or
     $costStatus.budget.currency -ne "EUR" -or
-    $costStatus.budget.mode -ne "observe" -or
+    $costStatus.budget.mode -ne "enforce" -or
     $costStatus.budget.daily_limit_eur_micros -ne 450000 -or
 	$costStatus.budget.budget_committed_eur_micros -ne 0 -or
     $costStatus.budget.available_eur_micros -ne 450000 -or
