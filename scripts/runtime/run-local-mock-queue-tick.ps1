@@ -77,7 +77,7 @@ from public.recover_stale_vyra_jobs(30, 100);
         return
     }
 
-    $next = [string](
+    $nextRow = (
         @(Invoke-LocalSql -Sql @'
 select id::text || '|' || agent
 from public.jobs
@@ -87,14 +87,19 @@ where status in ('queued', 'retry')
 order by priority, created_at, id
 limit 1;
 '@) | Select-Object -Last 1
-    ).Trim()
+    )
+    $next = if ($null -eq $nextRow) { '' } else { ([string]$nextRow).Trim() }
     if (-not $next) {
-        $seed = [string](
+        $seedRow = (
             @(Invoke-LocalSql -Sql @'
 select coalesce(job_id::text, '') || '|' || created::text || '|' || reason
 from public.enqueue_daily_vyra_scout();
 '@) | Select-Object -Last 1
-        ).Trim()
+        )
+        if ($null -eq $seedRow) {
+            throw 'Daily Scout enqueue returned no row'
+        }
+        $seed = ([string]$seedRow).Trim()
         Write-Host "[INFO] Daily Scout: $seed"
         if ($seed -notmatch '\|t\|created$') { return }
         $next = ($seed -split '\|', 3)[0] + '|topic_scout'
@@ -121,10 +126,11 @@ from public.enqueue_daily_vyra_scout();
     if ($reportedId -and $reportedId -ne $jobId) {
         throw "Controller dispatched another job: $reportedId"
     }
-    $stored = [string](
+    $storedRow = (
         @(Invoke-LocalSql -Sql "select status from public.jobs where id = '$jobId'::uuid;") |
             Select-Object -Last 1
-    ).Trim()
+    )
+    $stored = if ($null -eq $storedRow) { '' } else { ([string]$storedRow).Trim() }
     if ($stored -ne 'completed') {
         throw "Job did not persist completion: $jobId ($stored)"
     }
