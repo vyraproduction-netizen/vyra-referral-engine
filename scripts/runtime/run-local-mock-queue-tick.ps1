@@ -101,7 +101,7 @@ from public.enqueue_daily_vyra_scout();
         }
         $seed = ([string]$seedRow).Trim()
         Write-Host "[INFO] Daily Scout: $seed"
-        if ($seed -notmatch '\|t\|created$') { return }
+        if ($seed -notmatch '\|true\|created$') { return }
         $next = ($seed -split '\|', 3)[0] + '|topic_scout'
     }
 
