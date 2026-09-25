@@ -264,12 +264,6 @@ delete from public.jobs
 where agent = 'content'
   and payload->>'source_job_id' = '$researchJobId';
 
-delete from public.vyra_cost_observations
-where job_id = '$researchJobId'::uuid;
-
-delete from public.vyra_cost_reservations
-where job_id = '$researchJobId'::uuid;
-
 delete from public.referral_links
 where program_id in (
   select id
@@ -280,18 +274,17 @@ where program_id in (
 delete from public.programs
 where official_url = '$candidateUrl';
 
-delete from public.jobs
-where id = '$researchJobId'::uuid;
-
 select
   (select count(*) from public.jobs
-   where id = '$researchJobId'::uuid
-      or (
-        agent = 'content'
-        and payload->>'source_job_id' = '$researchJobId'
-      )) || '|' ||
+   where agent = 'content'
+     and payload->>'source_job_id' = '$researchJobId') || '|' ||
   (select count(*) from public.programs
-   where official_url = '$candidateUrl') || '|' ||
+   where official_url = '$candidateUrl');
+
+-- Retain the Research job and paid ledger for audit and the daily budget.
+select
+  (select count(*) from public.jobs
+   where id = '$researchJobId'::uuid) || '|' ||
   (select count(*) from public.vyra_cost_observations
    where job_id = '$researchJobId'::uuid) || '|' ||
   (select count(*) from public.vyra_cost_reservations
@@ -302,15 +295,16 @@ commit;
 
     $cleanupState = (
         $cleanupOutput -split "\r?\n" |
-        Where-Object { $_ -match "^\d+\|\d+\|\d+\|\d+$" } |
+        Where-Object { $_ -match "^\d+\|\d+$" } |
         Select-Object -Last 1
     )
 
-    if ($cleanupState -ne "0|0|0|0") {
+    if ($cleanupState -ne "0|0") {
         throw "Controlled Tavily Research-worker cleanup failed: $cleanupOutput"
     }
 
-    Write-Host "[PASS] Diagnostic data cleaned: $cleanupState" -ForegroundColor Green
+    Write-Host "[PASS] Diagnostic program and queued Content job cleaned: $cleanupState" -ForegroundColor Green
+    Write-Host "[INFO] Paid Research job and cost ledger retained for budget accounting" -ForegroundColor DarkYellow
 }
 
 Write-Host "RESULT: PASS" -ForegroundColor Green

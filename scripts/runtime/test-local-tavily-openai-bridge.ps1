@@ -342,17 +342,10 @@ where agent = 'qa'
 delete from public.content
 where evidence->>'source_job_id' = '$researchJobId';
 
-delete from public.vyra_cost_observations
-where job_id = '$researchJobId'::uuid
-   or job_id = nullif('$contentJobId', '')::uuid;
-
-delete from public.vyra_cost_reservations
-where job_id = '$researchJobId'::uuid
-   or job_id = nullif('$contentJobId', '')::uuid;
-
 delete from public.jobs
 where agent = 'content'
-  and payload->>'source_job_id' = '$researchJobId';
+  and payload->>'source_job_id' = '$researchJobId'
+  and id is distinct from nullif('$contentJobId', '')::uuid;
 
 delete from public.referral_links
 where program_id in (
@@ -364,15 +357,12 @@ where program_id in (
 delete from public.programs
 where official_url = '$candidateUrl';
 
-delete from public.jobs
-where id = '$researchJobId'::uuid;
-
 select
   (select count(*) from public.jobs
-   where id = '$researchJobId'::uuid
-      or (
+   where (
         agent = 'content'
         and payload->>'source_job_id' = '$researchJobId'
+        and id is distinct from nullif('$contentJobId', '')::uuid
       )
       or (
         agent = 'qa'
@@ -381,28 +371,23 @@ select
   (select count(*) from public.content
    where evidence->>'source_job_id' = '$researchJobId') || '|' ||
   (select count(*) from public.programs
-   where official_url = '$candidateUrl') || '|' ||
-  (select count(*) from public.vyra_cost_observations
-   where job_id = '$researchJobId'::uuid
-      or job_id = nullif('$contentJobId', '')::uuid) || '|' ||
-  (select count(*) from public.vyra_cost_reservations
-   where job_id = '$researchJobId'::uuid
-      or job_id = nullif('$contentJobId', '')::uuid);
+   where official_url = '$candidateUrl');
 
 commit;
 "@
 
     $cleanupState = (
         $cleanupOutput -split "\r?\n" |
-        Where-Object { $_ -match "^\d+\|\d+\|\d+\|\d+\|\d+$" } |
+        Where-Object { $_ -match "^\d+\|\d+\|\d+$" } |
         Select-Object -Last 1
     )
 
-    if ($cleanupState -ne "0|0|0|0|0") {
+    if ($cleanupState -ne "0|0|0") {
         throw "Controlled bridge cleanup failed: $cleanupOutput"
     }
 
-    Write-Host "[PASS] Diagnostic data cleaned: $cleanupState" -ForegroundColor Green
+    Write-Host "[PASS] Diagnostic content and downstream jobs cleaned: $cleanupState" -ForegroundColor Green
+    Write-Host "[INFO] Paid jobs and cost ledgers retained for budget accounting" -ForegroundColor DarkYellow
 }
 
 Write-Host "RESULT: PASS" -ForegroundColor Green

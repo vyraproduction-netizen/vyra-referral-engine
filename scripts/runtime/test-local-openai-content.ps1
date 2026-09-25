@@ -257,19 +257,7 @@ where r.job_id = '$contentJobId'::uuid
     Write-Pass "One OpenAI call completed with settled reservation and USD ledger"
 }
 finally {
-    $contentIdFilter = if ($contentJobId) {
-        "or id = '$contentJobId'::uuid"
-    } else {
-        ""
-    }
-
     $cleanup = Invoke-LocalSql -Sql @"
-delete from public.vyra_cost_observations
-where job_id = '$contentJobId'::uuid;
-
-delete from public.vyra_cost_reservations
-where job_id = '$contentJobId'::uuid;
-
 delete from public.referral_links
 where program_id in (
   select id
@@ -284,15 +272,15 @@ delete from public.content
 where evidence->>'request_id' = '$scoutJobId';
 
 delete from public.jobs
-where id = '$scoutJobId'::uuid
-   or payload->>'request_id' = '$scoutJobId'
-   $contentIdFilter;
+where (id = '$scoutJobId'::uuid
+   or payload->>'request_id' = '$scoutJobId')
+  and id is distinct from nullif('$contentJobId', '')::uuid;
 
 select
   (select count(*) from public.jobs
-   where id = '$scoutJobId'::uuid
-      or payload->>'request_id' = '$scoutJobId'
-      $contentIdFilter)
+   where (id = '$scoutJobId'::uuid
+      or payload->>'request_id' = '$scoutJobId')
+     and id is distinct from nullif('$contentJobId', '')::uuid)
   || '|' ||
   (select count(*) from public.content
    where evidence->>'request_id' = '$scoutJobId')
@@ -304,20 +292,14 @@ select
    where program_id in (
      select id from public.programs
      where official_url = '$runtimeProgramUrl'
-   ))
-  || '|' ||
-  (select count(*) from public.vyra_cost_observations
-   where job_id = '$contentJobId'::uuid)
-  || '|' ||
-  (select count(*) from public.vyra_cost_reservations
-   where job_id = '$contentJobId'::uuid);
+   ));
 "@
 
     $cleanupResult = [string](@($cleanup) | Select-Object -Last 1)
-    if ($cleanupResult.Trim() -ne "0|0|0|0|0|0") {
+    if ($cleanupResult.Trim() -ne "0|0|0|0") {
         throw "Controlled OpenAI test cleanup failed: $cleanupResult"
     }
 }
 
-Write-Pass "Controlled OpenAI diagnostic rows cleaned up"
+Write-Pass "Diagnostic rows cleaned; paid Content job and cost ledger retained"
 Write-Host "RESULT: PASS" -ForegroundColor Green

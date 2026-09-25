@@ -217,23 +217,17 @@ finally {
     $cleanup = Invoke-LocalSql -Sql @"
 begin;
 
-delete from public.vyra_cost_observations
-where job_id = '$scoutJobId'::uuid;
-
-delete from public.vyra_cost_reservations
-where job_id = '$scoutJobId'::uuid;
-
 delete from public.jobs
-where id = '$scoutJobId'::uuid
-   or (
-     agent = 'research'
-     and payload->>'request_id' = '$scoutJobId'
-   );
+where agent = 'research'
+  and payload->>'request_id' = '$scoutJobId';
 
 select
   (select count(*) from public.jobs
-   where id = '$scoutJobId'::uuid
-      or (agent = 'research' and payload->>'request_id' = '$scoutJobId')) || '|' ||
+   where agent = 'research'
+     and payload->>'request_id' = '$scoutJobId');
+
+-- Keep the paid job and ledger so the daily limit remains enforced.
+select
   (select count(*) from public.vyra_cost_observations
    where job_id = '$scoutJobId'::uuid) || '|' ||
   (select count(*) from public.vyra_cost_reservations
@@ -244,15 +238,16 @@ commit;
 
 	$cleanupState = (
 		$cleanup -split "\r?\n" |
-		Where-Object { $_ -match "^\d+\|\d+\|\d+$" } |
+		Where-Object { $_ -match "^\d+$" } |
 		Select-Object -Last 1
 	)
 
-	if ($cleanupState -ne "0|0|0") {
+	if ($cleanupState -ne "0") {
 		throw "Controlled Tavily test cleanup failed: $cleanup"
 	}
 
-	Write-Host "[PASS] Diagnostic data cleaned: $cleanupState" -ForegroundColor Green
+	Write-Host "[PASS] Diagnostic Research jobs cleaned: $cleanupState" -ForegroundColor Green
+	Write-Host "[INFO] Paid Topic Scout job and cost ledger retained for budget accounting" -ForegroundColor DarkYellow
 }
 
 Write-Host "RESULT: PASS" -ForegroundColor Green
