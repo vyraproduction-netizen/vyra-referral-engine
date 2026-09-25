@@ -127,6 +127,7 @@ Deno.test(
         "https://vyraproduction-netizen.github.io/vyra-publisher-test",
       verifyAttempts: 1,
       verifyDelayMs: 0,
+      robotsDirective: "noindex,nofollow",
       fetchImpl: async (url, init) => {
         calls.push({ init });
 
@@ -175,6 +176,7 @@ Deno.test(
         "https://vyraproduction-netizen.github.io/vyra-publisher-test",
       verifyAttempts: 1,
       verifyDelayMs: 0,
+      robotsDirective: "noindex,nofollow",
       fetchImpl: async () =>
         Response.json({
           sha: "existing",
@@ -213,6 +215,7 @@ Deno.test(
         "https://vyraproduction-netizen.github.io/vyra-publisher-test",
       verifyAttempts: 1,
       verifyDelayMs: 0,
+      robotsDirective: "noindex,nofollow",
       fetchImpl: async (url, init) => {
         calls.push({ url: String(url), init });
 
