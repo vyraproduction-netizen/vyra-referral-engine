@@ -119,6 +119,7 @@ Deno.test("Cloudflare Pages receipt and site navigation are verified", async () 
     branch: "main",
     siteBaseUrl: "https://vyraproduction.pages.dev",
     hostingProvider: "cloudflare_pages",
+    robotsDirective: "noindex,nofollow",
     verifyAttempts: 1,
     verifyDelayMs: 0,
     fetchImpl: async (url, init) => {
