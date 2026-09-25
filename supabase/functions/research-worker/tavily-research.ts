@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from "../_shared/vyra/fetch-with-timeout.ts";
+
 export type TavilyResearchResult = {
   query: string;
   answer?: string;
@@ -40,8 +42,10 @@ export async function researchWithTavily(
     throw new Error("TAVILY_API_KEY is required");
   }
 
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     buildTavilySearchRequest(apiKey, query),
+    {},
+    30_000,
   );
 
   if (!response.ok) {

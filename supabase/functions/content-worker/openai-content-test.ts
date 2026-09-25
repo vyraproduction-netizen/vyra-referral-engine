@@ -30,6 +30,7 @@ const generated = {
 
 Deno.test("OpenAI content provider requests strict structured output", async () => {
   let requestBody: Record<string, unknown> | undefined;
+  let requestHasDeadline = false;
 
   const provider = createOpenAIContentProvider({
     apiKey: "test-key",
@@ -37,6 +38,7 @@ Deno.test("OpenAI content provider requests strict structured output", async () 
     maxOutputTokens: 1_200,
     fetchImpl: async (_input, init) => {
       requestBody = JSON.parse(String(init?.body));
+      requestHasDeadline = init?.signal instanceof AbortSignal;
       return Response.json({
         output: [{
           type: "message",
@@ -47,6 +49,10 @@ Deno.test("OpenAI content provider requests strict structured output", async () 
   });
 
   const result = await provider(input);
+
+  if (!requestHasDeadline) {
+    throw new Error("OpenAI request did not receive a timeout signal");
+  }
 
   if (result.body !== generated.body) {
     throw new Error("Structured content body was not returned");

@@ -3,6 +3,7 @@ import type {
   ResearchRequest,
   ResearchResult,
 } from "./research.ts";
+import { fetchWithTimeout } from "../_shared/vyra/fetch-with-timeout.ts";
 
 type TavilySearchResult = {
   title?: string;
@@ -24,7 +25,7 @@ export class TavilyResearchProvider implements ResearchProvider {
   async search(
     request: ResearchRequest,
   ): Promise<ResearchResult[]> {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       "https://api.tavily.com/search",
       {
         method: "POST",
@@ -44,6 +45,7 @@ export class TavilyResearchProvider implements ResearchProvider {
           include_raw_content: false,
         }),
       },
+      30_000,
     );
 
     if (!response.ok) {

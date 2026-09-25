@@ -4,6 +4,7 @@ import type {
   GeneratedContent,
   ProviderUsage,
 } from "./content-provider.ts";
+import { fetchWithTimeout } from "../_shared/vyra/fetch-with-timeout.ts";
 
 type OpenAIContentProviderOptions = {
   apiKey?: string;
@@ -263,7 +264,7 @@ export function createOpenAIContentProvider(
   const fetchImpl = options.fetchImpl ?? fetch;
 
   return async (input) => {
-    const response = await fetchImpl("https://api.openai.com/v1/responses", {
+    const response = await fetchWithTimeout("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         authorization: `Bearer ${apiKey}`,
@@ -293,7 +294,7 @@ export function createOpenAIContentProvider(
           },
         },
       }),
-    });
+    }, 90_000, fetchImpl);
 
     if (!response.ok) {
       throw new Error(`OpenAI content request failed with HTTP ${response.status}`);
