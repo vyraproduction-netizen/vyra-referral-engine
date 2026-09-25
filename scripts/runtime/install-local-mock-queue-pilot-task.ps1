@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 if ($Apply -and $Remove) { throw 'Choose Apply or Remove, not both' }
 $taskName = 'VYRA Local Mock Queue Pilot'
 $tickScript = Join-Path $PSScriptRoot 'run-local-mock-queue-tick.ps1'
+$launcherScript = Join-Path $PSScriptRoot 'run-local-mock-queue-tick-hidden.vbs'
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($Remove) {
     if ($existing) {
@@ -26,6 +27,9 @@ if ($Remove) {
 if (-not (Test-Path -LiteralPath $tickScript -PathType Leaf)) {
     throw "Mock queue tick script not found: $tickScript"
 }
+if (-not (Test-Path -LiteralPath $launcherScript -PathType Leaf)) {
+    throw "Hidden mock queue launcher not found: $launcherScript"
+}
 
 if ($existing) {
     throw "Task already exists; inspect or remove it before changing: $taskName"
@@ -36,6 +40,7 @@ $start = (Get-Date).AddMinutes(2)
 Write-Host "Task: $taskName"
 Write-Host "Account: $userName (interactive session only)"
 Write-Host "Script: $tickScript"
+Write-Host "Launcher: $launcherScript (no console window)"
 Write-Host "First run: $start"
 Write-Host "Interval: $IntervalMinutes minutes"
 Write-Host "Test window: $DurationHours hours"
@@ -47,9 +52,8 @@ if (-not $Apply) {
     return
 }
 
-$arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' +
-    '"' + $tickScript + '"'
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
+$arguments = '//B //Nologo "' + $launcherScript + '"'
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $arguments
 $trigger = New-ScheduledTaskTrigger -Once -At $start `
     -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
     -RepetitionDuration (New-TimeSpan -Hours $DurationHours)
