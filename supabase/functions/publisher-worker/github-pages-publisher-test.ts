@@ -40,6 +40,7 @@ Deno.test(
         "https://vyraproduction-netizen.github.io/vyra-publisher-test",
       verifyAttempts: 1,
       verifyDelayMs: 0,
+      robotsDirective: "index,follow",
       fetchImpl: async (url, init) => {
         calls.push({ url: String(url), init });
 
@@ -90,8 +91,25 @@ Deno.test(
     if (!upload?.init?.body) {
       throw new Error("Article source was not uploaded");
     }
+    const uploaded = JSON.parse(String(upload.init.body)) as {
+      content: string;
+    };
+    const html = new TextDecoder().decode(Uint8Array.from(
+      atob(uploaded.content),
+      (character) => character.charCodeAt(0),
+    ));
+    if (!html.includes('<meta name="robots" content="index,follow">')) {
+      throw new Error("Explicit indexing opt-in was not published");
+    }
   },
 );
+
+Deno.test("GitHub Pages articles stay out of search by default", () => {
+  const html = renderGithubPagesDocument(request());
+  if (!html.includes('<meta name="robots" content="noindex,nofollow">')) {
+    throw new Error("Default publication must remain noindex");
+  }
+});
 
 Deno.test(
   "GitHub Pages publisher reuses an uploaded source while Pages is catching up",

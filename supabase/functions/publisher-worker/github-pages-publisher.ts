@@ -6,6 +6,7 @@ import type {
 
 const GITHUB_API = "https://api.github.com";
 const markerPrefix = "<!-- vyra-content-id: ";
+type RobotsDirective = "noindex,nofollow" | "index,follow";
 
 export type GithubPagesPublisherProviderOptions = {
   token?: string;
@@ -14,6 +15,7 @@ export type GithubPagesPublisherProviderOptions = {
   siteBaseUrl?: string;
   verifyAttempts?: number;
   verifyDelayMs?: number;
+  robotsDirective?: RobotsDirective;
   fetchImpl?: typeof fetch;
 };
 
@@ -150,7 +152,10 @@ function renderMarkdown(markdown: string): string {
   return output.join("\n");
 }
 
-export function renderGithubPagesDocument(request: PublishRequest): string {
+export function renderGithubPagesDocument(
+  request: PublishRequest,
+  robotsDirective: RobotsDirective = "noindex,nofollow",
+): string {
   const title = escapeHtml(request.meta_title?.trim() || request.title);
   const description = escapeHtml(
     request.meta_description?.trim() || request.excerpt?.trim() || request.title,
@@ -164,7 +169,7 @@ export function renderGithubPagesDocument(request: PublishRequest): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex,nofollow">
+  <meta name="robots" content="${robotsDirective}">
   <title>${title}</title>
   <meta name="description" content="${description}">
 </head>
@@ -198,6 +203,7 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
   #siteBaseUrl: string;
   #verifyAttempts: number;
   #verifyDelayMs: number;
+  #robotsDirective: RobotsDirective;
   #fetch: typeof fetch;
 
   constructor(options: GithubPagesPublisherProviderOptions = {}) {
@@ -221,6 +227,13 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
     ));
     this.#verifyAttempts = options.verifyAttempts ?? 30;
     this.#verifyDelayMs = options.verifyDelayMs ?? 2000;
+    const robotsDirective = options.robotsDirective ??
+      Deno.env.get("GITHUB_PUBLISH_ROBOTS") ?? "noindex,nofollow";
+    if (robotsDirective !== "noindex,nofollow" &&
+      robotsDirective !== "index,follow") {
+      throw new Error("GITHUB_PUBLISH_ROBOTS must be noindex,nofollow or index,follow");
+    }
+    this.#robotsDirective = robotsDirective;
     if (!Number.isSafeInteger(this.#verifyAttempts) || this.#verifyAttempts < 1) {
       throw new Error("GITHUB_PUBLISH_VERIFY_ATTEMPTS must be positive");
     }
@@ -259,7 +272,7 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
       );
     }
 
-    const document = renderGithubPagesDocument(request);
+    const document = renderGithubPagesDocument(request, this.#robotsDirective);
     const existingBody = existing?.encoding === "base64"
       ? fromBase64(existing.content)
       : "";
