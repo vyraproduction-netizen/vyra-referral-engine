@@ -7,6 +7,7 @@ import type {
 const GITHUB_API = "https://api.github.com";
 const markerPrefix = "<!-- vyra-content-id: ";
 type RobotsDirective = "noindex,nofollow" | "index,follow";
+type HostingProvider = "github_pages" | "cloudflare_pages";
 
 export type GithubPagesPublisherProviderOptions = {
   token?: string;
@@ -16,6 +17,7 @@ export type GithubPagesPublisherProviderOptions = {
   verifyAttempts?: number;
   verifyDelayMs?: number;
   robotsDirective?: RobotsDirective;
+  hostingProvider?: HostingProvider;
   fetchImpl?: typeof fetch;
 };
 
@@ -155,6 +157,7 @@ function renderMarkdown(markdown: string): string {
 export function renderGithubPagesDocument(
   request: PublishRequest,
   robotsDirective: RobotsDirective = "noindex,nofollow",
+  siteBaseUrl?: string,
 ): string {
   const title = escapeHtml(request.meta_title?.trim() || request.title);
   const description = escapeHtml(
@@ -163,6 +166,9 @@ export function renderGithubPagesDocument(
   const language = /^[A-Za-z]{2,12}(?:-[A-Za-z0-9]{2,12})?$/.test(
     request.language,
   ) ? request.language : "en";
+  const siteNavigation = siteBaseUrl
+    ? `<nav aria-label="Site navigation"><a href="${escapeHtml(siteBaseUrl)}/">Home</a> · <a href="${escapeHtml(siteBaseUrl)}/about">How we work</a> · <a href="${escapeHtml(siteBaseUrl)}/disclosure">Affiliate disclosure</a> · <a href="${escapeHtml(siteBaseUrl)}/privacy">Privacy</a></nav>`
+    : "";
 
   return `<!doctype html>
 <html lang="${escapeHtml(language)}">
@@ -174,12 +180,14 @@ export function renderGithubPagesDocument(
   <meta name="description" content="${description}">
 </head>
 <body>
+  ${siteNavigation}
   <main>
     ${markerPrefix}${escapeHtml(request.content_id)} -->
     <article>
 ${renderMarkdown(request.body)}
     </article>
   </main>
+  ${siteNavigation}
 </body>
 </html>
 `;
@@ -205,6 +213,7 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
   #verifyDelayMs: number;
   #robotsDirective: RobotsDirective;
   #fetch: typeof fetch;
+  #hostingProvider: HostingProvider;
 
   constructor(options: GithubPagesPublisherProviderOptions = {}) {
     this.#token = required(
@@ -225,7 +234,9 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
       options.siteBaseUrl ?? Deno.env.get("GITHUB_PUBLISH_BASE_URL"),
       "GITHUB_PUBLISH_BASE_URL",
     ));
-    this.#verifyAttempts = options.verifyAttempts ?? 30;
+    this.#hostingProvider = options.hostingProvider ?? "github_pages";
+    this.#verifyAttempts = options.verifyAttempts ??
+      (this.#hostingProvider === "cloudflare_pages" ? 45 : 30);
     this.#verifyDelayMs = options.verifyDelayMs ?? 2000;
     const robotsDirective = options.robotsDirective ??
       Deno.env.get("GITHUB_PUBLISH_ROBOTS") ?? "noindex,nofollow";
@@ -247,8 +258,9 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
     const slug = validSlug(request.slug);
     const path = `docs/articles/${slug}.html`;
     const marker = `${markerPrefix}${request.content_id} -->`;
-    const publishedUrl =
-      `${this.#siteBaseUrl}/articles/${encodeURIComponent(slug)}.html`;
+    const publishedUrl = `${this.#siteBaseUrl}/articles/${encodeURIComponent(slug)}${
+      this.#hostingProvider === "cloudflare_pages" ? "" : ".html"
+    }`;
     const apiUrl =
       `${GITHUB_API}/repos/${encodeURIComponent(this.#owner)}/${encodeURIComponent(this.#repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
     const headers = {
@@ -272,7 +284,11 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
       );
     }
 
-    const document = renderGithubPagesDocument(request, this.#robotsDirective);
+    const document = renderGithubPagesDocument(
+      request,
+      this.#robotsDirective,
+      this.#hostingProvider === "cloudflare_pages" ? this.#siteBaseUrl : undefined,
+    );
     const existingBody = existing?.encoding === "base64"
       ? fromBase64(existing.content)
       : "";
@@ -307,7 +323,7 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
         headers: { "cache-control": "no-cache" },
       });
       if (response.ok && (await response.text()).includes(marker)) {
-        return { published_url: publishedUrl, provider: "github_pages" };
+        return { published_url: publishedUrl, provider: this.#hostingProvider };
       }
       if (attempt < this.#verifyAttempts && this.#verifyDelayMs > 0) {
         await wait(this.#verifyDelayMs);

@@ -52,6 +52,10 @@ export function createPublisherProvider(
     return new GithubPagesPublisherProvider();
   }
 
+  if (name === "cloudflare_pages") {
+    return new GithubPagesPublisherProvider({ hostingProvider: "cloudflare_pages" });
+  }
+
   if (!name) {
     throw new Error("PUBLISH_PROVIDER is required");
   }

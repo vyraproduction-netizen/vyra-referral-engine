@@ -111,6 +111,45 @@ Deno.test("GitHub Pages articles stay out of search by default", () => {
   }
 });
 
+Deno.test("Cloudflare Pages receipt and site navigation are verified", async () => {
+  let publishedHtml = "";
+  const provider = new GithubPagesPublisherProvider({
+    token: "test-token",
+    repository: "vyraproduction-netizen/vyraproduction-site",
+    branch: "main",
+    siteBaseUrl: "https://vyraproduction.pages.dev",
+    hostingProvider: "cloudflare_pages",
+    verifyAttempts: 1,
+    verifyDelayMs: 0,
+    fetchImpl: async (url, init) => {
+      if (init?.method === "PUT") {
+        const payload = JSON.parse(String(init.body)) as { content: string };
+        publishedHtml = new TextDecoder().decode(Uint8Array.from(
+          atob(payload.content), (character) => character.charCodeAt(0)
+        ));
+        return Response.json({}, { status: 201 });
+      }
+      if (String(url).startsWith("https://api.github.com/")) {
+        return new Response("missing", { status: 404 });
+      }
+      return new Response(publishedHtml, { status: 200 });
+    },
+  });
+  const receipt = await provider.publish(request());
+  if (receipt.provider !== "cloudflare_pages" ||
+    receipt.published_url !== "https://vyraproduction.pages.dev/articles/test-article") {
+    throw new Error("Cloudflare Pages provider or URL is incorrect");
+  }
+  for (const path of ["/about", "/disclosure", "/privacy"]) {
+    if (!publishedHtml.includes(`https://vyraproduction.pages.dev${path}`)) {
+      throw new Error(`Missing Cloudflare site navigation: ${path}`);
+    }
+  }
+  if (!publishedHtml.includes('<meta name="robots" content="noindex,nofollow">')) {
+    throw new Error("Cloudflare diagnostic article must remain noindex");
+  }
+});
+
 Deno.test(
   "GitHub Pages publisher reuses an uploaded source while Pages is catching up",
   async () => {
