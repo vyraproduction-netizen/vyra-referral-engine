@@ -47,7 +47,7 @@ if (-not $Apply) {
     return
 }
 
-$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ' +
+$arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ' +
     '"' + $tickScript + '"'
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
 $trigger = New-ScheduledTaskTrigger -Once -At $start `
