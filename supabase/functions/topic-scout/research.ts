@@ -1,4 +1,5 @@
 export type ResearchRequest = {
+  request_id: string;
   query: string;
   language: string;
   region: string;

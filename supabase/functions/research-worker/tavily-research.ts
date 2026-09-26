@@ -1,3 +1,5 @@
+import { fetchWithTimeout } from "../_shared/vyra/fetch-with-timeout.ts";
+
 export type TavilyResearchResult = {
   query: string;
   answer?: string;
@@ -9,6 +11,28 @@ export type TavilyResearchResult = {
   }>;
 };
 
+export function buildTavilySearchRequest(
+  apiKey: string,
+  query: string,
+): Request {
+  return new Request(
+    "https://api.tavily.com/search",
+    {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        search_depth: "advanced",
+        include_answer: true,
+        max_results: 5,
+      }),
+    },
+  );
+}
+
 export async function researchWithTavily(
   query: string,
 ): Promise<TavilyResearchResult> {
@@ -18,21 +42,10 @@ export async function researchWithTavily(
     throw new Error("TAVILY_API_KEY is required");
   }
 
-  const response = await fetch(
-    "https://api.tavily.com/search",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        api_key: apiKey,
-        query,
-        search_depth: "advanced",
-        include_answer: true,
-        max_results: 5,
-      }),
-    },
+  const response = await fetchWithTimeout(
+    buildTavilySearchRequest(apiKey, query),
+    {},
+    30_000,
   );
 
   if (!response.ok) {

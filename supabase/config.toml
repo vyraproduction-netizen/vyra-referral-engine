@@ -11,11 +11,34 @@ enabled = true
 verify_jwt = false
 entrypoint = "./functions/research-worker/index.ts"
 
-[functions.research-worker-test]
+[functions.content-worker]
 enabled = true
 verify_jwt = false
-entrypoint = "./functions/research-worker-test/index.ts"
+entrypoint = "./functions/content-worker/index.ts"
 
+[functions.qa-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/qa-worker/index.ts"
+
+[functions.publisher-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/publisher-worker/index.ts"
+[functions.analytics-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/analytics-worker/index.ts"
+
+[functions.optimizer-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/optimizer-worker/index.ts"
+
+[functions.repeat-worker]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/repeat-worker/index.ts"
 [functions.vyra-controller]
 enabled = true
 verify_jwt = false
