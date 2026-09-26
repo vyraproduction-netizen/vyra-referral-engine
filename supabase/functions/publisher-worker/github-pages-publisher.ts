@@ -203,6 +203,41 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+const articleListMarker = "<!-- VYRA_ARTICLE_LINKS_START -->";
+
+function addArticleToArchive(
+  document: string,
+  slug: string,
+  title: string,
+): string {
+  if (!document.includes(articleListMarker) ||
+    !document.includes("<!-- VYRA_ARTICLE_LINKS_END -->")) {
+    throw new Error("VYRA article archive markers are missing");
+  }
+  if (document.includes(`data-vyra-article="${slug}"`)) {
+    return document;
+  }
+
+  const item =
+    `<li data-vyra-article="${slug}"><a href="${slug}">${escapeHtml(title)}</a></li>`;
+  return document.replace(articleListMarker, `${articleListMarker}\n${item}`);
+}
+
+function addArticleToSitemap(document: string, url: string): string {
+  if (!document.includes(
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+  ) || !document.includes("</urlset>")) {
+    throw new Error("VYRA sitemap format is not recognized");
+  }
+  if (document.includes(`<loc>${url}</loc>`)) {
+    return document;
+  }
+  return document.replace(
+    "</urlset>",
+    `  <url><loc>${url}</loc></url>\n</urlset>`,
+  );
+}
+
 export class GithubPagesPublisherProvider implements PublisherProvider {
   #token: string;
   #owner: string;
@@ -252,6 +287,78 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
       throw new Error("GITHUB_PUBLISH_VERIFY_DELAY_MS must be non-negative");
     }
     this.#fetch = options.fetchImpl ?? fetch;
+  }
+
+  async #updateDiscoveryFile(
+    path: string,
+    transform: (contents: string) => string,
+  ): Promise<void> {
+    const apiUrl =
+      `${GITHUB_API}/repos/${encodeURIComponent(this.#owner)}/${encodeURIComponent(this.#repo)}/contents/${path.split("/").map(encodeURIComponent).join("/")}`;
+    const headers = {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${this.#token}`,
+      "x-github-api-version": "2022-11-28",
+    };
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const lookup = await this.#fetch(
+        `${apiUrl}?ref=${encodeURIComponent(this.#branch)}`,
+        { headers },
+      );
+      if (!lookup.ok) {
+        throw responseError(
+          `VYRA discovery lookup failed for ${path}`,
+          lookup,
+          await lookup.text(),
+        );
+      }
+      const existing = await lookup.json() as ExistingContent;
+      if (existing.encoding !== "base64" || !existing.sha) {
+        throw new Error(`VYRA discovery file is invalid: ${path}`);
+      }
+      const oldBody = fromBase64(existing.content);
+      const newBody = transform(oldBody);
+      if (newBody === oldBody) return;
+
+      const upload = await this.#fetch(apiUrl, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          message: `List published VYRA article in ${path}`,
+          content: base64(newBody),
+          branch: this.#branch,
+          sha: existing.sha,
+        }),
+      });
+      if (upload.ok) return;
+      if ((upload.status === 409 || upload.status === 422) && attempt < 3) {
+        continue;
+      }
+      throw responseError(
+        `VYRA discovery update failed for ${path}`,
+        upload,
+        await upload.text(),
+      );
+    }
+  }
+
+  async #publishDiscovery(
+    request: PublishRequest,
+    slug: string,
+    publishedUrl: string,
+  ): Promise<void> {
+    if (this.#hostingProvider !== "cloudflare_pages" ||
+      this.#robotsDirective !== "index,follow") return;
+
+    await this.#updateDiscoveryFile(
+      "docs/articles/index.html",
+      (contents) => addArticleToArchive(contents, slug, request.title),
+    );
+    await this.#updateDiscoveryFile(
+      "docs/sitemap.xml",
+      (contents) => addArticleToSitemap(contents, publishedUrl),
+    );
   }
 
   async publish(request: PublishRequest): Promise<PublishReceipt> {
@@ -323,6 +430,7 @@ export class GithubPagesPublisherProvider implements PublisherProvider {
         headers: { "cache-control": "no-cache" },
       });
       if (response.ok && (await response.text()).includes(marker)) {
+        await this.#publishDiscovery(request, slug, publishedUrl);
         return { published_url: publishedUrl, provider: this.#hostingProvider };
       }
       if (attempt < this.#verifyAttempts && this.#verifyDelayMs > 0) {

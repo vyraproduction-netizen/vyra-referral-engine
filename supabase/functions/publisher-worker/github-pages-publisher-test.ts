@@ -305,3 +305,173 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "indexable Cloudflare publication lists only a verified page and retries safely",
+  async () => {
+    const files = new Map<string, { sha: string; content: string }>([
+      ["docs/articles/index.html", {
+        sha: "archive-1",
+        content:
+          "<ul>\n<!-- VYRA_ARTICLE_LINKS_START -->\n<!-- VYRA_ARTICLE_LINKS_END -->\n</ul>",
+      }],
+      ["docs/sitemap.xml", {
+        sha: "sitemap-1",
+        content:
+          '<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n</urlset>',
+      }],
+    ]);
+    const uploads: string[] = [];
+    let articleIsLive = false;
+    const provider = new GithubPagesPublisherProvider({
+      token: "test-token",
+      repository: "vyraproduction-netizen/vyraproduction-site",
+      branch: "main",
+      siteBaseUrl: "https://vyraproduction.pages.dev",
+      hostingProvider: "cloudflare_pages",
+      robotsDirective: "index,follow",
+      verifyAttempts: 2,
+      verifyDelayMs: 0,
+      fetchImpl: async (url, init) => {
+        const address = String(url);
+        if (address.startsWith("https://api.github.com/")) {
+          const path = decodeURIComponent(
+            address.split("/contents/")[1].split("?")[0],
+          );
+          if (init?.method === "PUT") {
+            const payload = JSON.parse(String(init.body)) as {
+              sha?: string;
+              content: string;
+            };
+            const previous = files.get(path);
+            if (previous && previous.sha !== payload.sha) {
+              return new Response("SHA conflict", { status: 409 });
+            }
+            const content = new TextDecoder().decode(Uint8Array.from(
+              atob(payload.content), (character) => character.charCodeAt(0),
+            ));
+            uploads.push(path);
+            files.set(path, { sha: `updated-${uploads.length}`, content });
+            return Response.json({}, { status: 200 });
+          }
+          const entry = files.get(path);
+          return entry
+            ? Response.json({
+              sha: entry.sha,
+              encoding: "base64",
+              content: encodeBase64(entry.content),
+            })
+            : new Response("missing", { status: 404 });
+        }
+        if (address.endsWith("/articles/test-article")) {
+          if (!articleIsLive) {
+            articleIsLive = true;
+            return new Response("deploy pending", { status: 404 });
+          }
+          return new Response(
+            files.get("docs/articles/test-article.html")?.content ?? "",
+            { status: 200 },
+          );
+        }
+        throw new Error(`Unexpected URL: ${address}`);
+      },
+    });
+
+    await provider.publish(request());
+    if (uploads.join("|") !==
+      "docs/articles/test-article.html|docs/articles/index.html|docs/sitemap.xml") {
+      throw new Error("Discovery was published before the live article or in the wrong order");
+    }
+    if (!files.get("docs/articles/index.html")?.content.includes(
+      '<li data-vyra-article="test-article"><a href="test-article">Test article</a></li>',
+    )) {
+      throw new Error("Article archive did not link to the published page");
+    }
+    if (!files.get("docs/sitemap.xml")?.content.includes(
+      "<loc>https://vyraproduction.pages.dev/articles/test-article</loc>",
+    )) {
+      throw new Error("Published page is missing from the sitemap");
+    }
+
+    await provider.publish(request());
+    if (uploads.length !== 3) {
+      throw new Error("Retry duplicated the article or discovery uploads");
+    }
+  },
+);
+
+Deno.test("discovery failure can resume without duplicating the archive", async () => {
+  const files = new Map<string, { sha: string; content: string }>([
+    ["docs/articles/index.html", {
+      sha: "archive-1",
+      content:
+        "<!-- VYRA_ARTICLE_LINKS_START -->\n<!-- VYRA_ARTICLE_LINKS_END -->",
+    }],
+  ]);
+  const provider = new GithubPagesPublisherProvider({
+    token: "test-token",
+    repository: "vyraproduction-netizen/vyraproduction-site",
+    branch: "main",
+    siteBaseUrl: "https://vyraproduction.pages.dev",
+    hostingProvider: "cloudflare_pages",
+    robotsDirective: "index,follow",
+    verifyAttempts: 1,
+    verifyDelayMs: 0,
+    fetchImpl: async (url, init) => {
+      const address = String(url);
+      if (!address.startsWith("https://api.github.com/")) {
+        return new Response(
+          files.get("docs/articles/test-article.html")?.content ?? "",
+          { status: 200 },
+        );
+      }
+      const path = decodeURIComponent(
+        address.split("/contents/")[1].split("?")[0],
+      );
+      if (init?.method === "PUT") {
+        const payload = JSON.parse(String(init.body)) as {
+          content: string;
+        };
+        files.set(path, {
+          sha: "updated",
+          content: new TextDecoder().decode(Uint8Array.from(
+            atob(payload.content), (character) => character.charCodeAt(0),
+          )),
+        });
+        return Response.json({}, { status: 200 });
+      }
+      const entry = files.get(path);
+      return entry
+        ? Response.json({
+          sha: entry.sha,
+          encoding: "base64",
+          content: encodeBase64(entry.content),
+        })
+        : new Response("missing", { status: 404 });
+    },
+  });
+
+  let rejected = false;
+  try {
+    await provider.publish(request());
+  } catch {
+    rejected = true;
+  }
+  if (!rejected) {
+    throw new Error("Publisher accepted a page absent from the sitemap");
+  }
+
+  files.set("docs/sitemap.xml", {
+    sha: "sitemap-1",
+    content:
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n</urlset>',
+  });
+  await provider.publish(request());
+  const archive = files.get("docs/articles/index.html")?.content ?? "";
+  if (archive.split('data-vyra-article="test-article"').length !== 2 ||
+    !files.get("docs/sitemap.xml")?.content.includes(
+      "<loc>https://vyraproduction.pages.dev/articles/test-article</loc>",
+    )) {
+    throw new Error("Discovery retry did not finish idempotently");
+  }
+});
